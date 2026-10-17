@@ -5,7 +5,7 @@
 1. `migrations/20261017120000_pd_plan_baseline.sql` — employees, auth, leavers
 2. `migrations/20261017140000_employee_training_budgets.sql` — employee budget allocations, adjustments, reallocations
 
-Do **not** apply these to a cloud project until reviewed.
+Budget financial writes are RPC-only for `authenticated` (table INSERT/UPDATE revoked). Do **not** apply these to a cloud project until reviewed.
 
 This is a self-contained schema for:
 

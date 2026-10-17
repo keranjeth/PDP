@@ -1,6 +1,13 @@
 -- PD Plan: employee training budget allocations and transactions
 -- Depends on: 20261017120000_pd_plan_baseline.sql
 -- Local preparation only — do not apply until explicitly approved.
+--
+-- Security model:
+-- - authenticated: SELECT only on budget tables (RLS-scoped) + mutation RPCs
+-- - Financial INSERT/UPDATE/DELETE are not granted to authenticated
+-- - Balance helpers authorize via can_access_employee before returning data
+-- - Internal unlocked math / assert helpers are not granted to authenticated
+-- - Reallocation locks budget rows in UUID order to avoid deadlocks
 
 -- ---------------------------------------------------------------------------
 -- Document counters (BGT-/ADJ-/TRF-YYYY-NNN)
@@ -163,16 +170,48 @@ CREATE INDEX IF NOT EXISTS budget_reallocations_destination_idx
   ON public.budget_reallocations (org_id, destination_budget_id, created_at DESC);
 
 -- ---------------------------------------------------------------------------
--- Calculation helpers
+-- Calculation helpers (authorized; do not leak other orgs/employees)
 -- Actual training cost is 0 until Training Records exist.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public.employee_budget_current_amount(p_budget_id uuid)
+CREATE OR REPLACE FUNCTION public.employee_budget_assert_readable(p_budget_id uuid)
+RETURNS public.employee_budgets
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  b public.employee_budgets%ROWTYPE;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'not authenticated' USING ERRCODE = '28000';
+  END IF;
+
+  SELECT * INTO b
+  FROM public.employee_budgets
+  WHERE id = p_budget_id
+    AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'forbidden' USING ERRCODE = '42501';
+  END IF;
+
+  IF NOT public.can_access_employee(b.org_id, b.employee_id) THEN
+    RAISE EXCEPTION 'forbidden' USING ERRCODE = '42501';
+  END IF;
+
+  RETURN b;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.employee_budget_current_amount_unlocked(p_budget_id uuid)
 RETURNS numeric
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
+  -- Internal balance math after the caller has locked / authorized the row.
   SELECT COALESCE(
     (
       SELECT b.initial_amount
@@ -204,36 +243,57 @@ AS $$
   );
 $$;
 
-CREATE OR REPLACE FUNCTION public.employee_budget_actual_training_cost(p_budget_id uuid)
+CREATE OR REPLACE FUNCTION public.employee_budget_current_amount(p_budget_id uuid)
 RETURNS numeric
-LANGUAGE sql
+LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
+BEGIN
+  PERFORM public.employee_budget_assert_readable(p_budget_id);
+  RETURN public.employee_budget_current_amount_unlocked(p_budget_id);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.employee_budget_actual_training_cost(p_budget_id uuid)
+RETURNS numeric
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  PERFORM public.employee_budget_assert_readable(p_budget_id);
   -- Placeholder until Training Records link costs to budgets.
-  SELECT 0::numeric;
+  RETURN 0::numeric;
+END;
 $$;
 
 CREATE OR REPLACE FUNCTION public.employee_budget_remaining_amount(p_budget_id uuid)
 RETURNS numeric
-LANGUAGE sql
+LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT public.employee_budget_current_amount(p_budget_id)
-       - public.employee_budget_actual_training_cost(p_budget_id);
+BEGIN
+  PERFORM public.employee_budget_assert_readable(p_budget_id);
+  RETURN public.employee_budget_current_amount_unlocked(p_budget_id)
+       - 0::numeric;
+END;
 $$;
 
 CREATE OR REPLACE FUNCTION public.employee_budget_has_transactions(p_budget_id uuid)
 RETURNS boolean
-LANGUAGE sql
+LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT EXISTS (
+BEGIN
+  PERFORM public.employee_budget_assert_readable(p_budget_id);
+  RETURN EXISTS (
     SELECT 1 FROM public.budget_adjustments a WHERE a.budget_id = p_budget_id
   )
   OR EXISTS (
@@ -241,6 +301,7 @@ AS $$
     WHERE r.source_budget_id = p_budget_id
        OR r.destination_budget_id = p_budget_id
   );
+END;
 $$;
 
 CREATE OR REPLACE FUNCTION public.can_manage_budgets(p_org_id uuid)
@@ -469,7 +530,9 @@ BEGIN
     RAISE EXCEPTION 'forbidden' USING ERRCODE = '42501';
   END IF;
 
-  v_current := public.employee_budget_current_amount(p_budget_id);
+  -- Row is locked; use unlocked math so concurrent sessions cannot overspend.
+  v_current := public.employee_budget_current_amount_unlocked(p_budget_id)
+             - 0::numeric; -- actual training cost placeholder
 
   IF v_dir = 'decrease' AND p_amount > v_current THEN
     RAISE EXCEPTION 'Decrease would make available budget negative';
@@ -523,6 +586,10 @@ DECLARE
   v_uid uuid := auth.uid();
   src public.employee_budgets%ROWTYPE;
   dst public.employee_budgets%ROWTYPE;
+  v_first public.employee_budgets%ROWTYPE;
+  v_second public.employee_budgets%ROWTYPE;
+  v_first_id uuid;
+  v_second_id uuid;
   v_code text;
   v_id uuid;
   v_available numeric;
@@ -547,26 +614,43 @@ BEGIN
     RAISE EXCEPTION 'Reallocation amount must be greater than zero';
   END IF;
 
-  SELECT * INTO src
-  FROM public.employee_budgets
-  WHERE org_id = p_org_id
-    AND id = p_source_budget_id
-    AND deleted_at IS NULL
-  FOR UPDATE;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'Source budget not found' USING ERRCODE = 'P0002';
+  -- Lock both rows in UUID order to avoid deadlocks under concurrent transfers.
+  IF p_source_budget_id < p_destination_budget_id THEN
+    v_first_id := p_source_budget_id;
+    v_second_id := p_destination_budget_id;
+  ELSE
+    v_first_id := p_destination_budget_id;
+    v_second_id := p_source_budget_id;
   END IF;
 
-  SELECT * INTO dst
+  SELECT * INTO v_first
   FROM public.employee_budgets
   WHERE org_id = p_org_id
-    AND id = p_destination_budget_id
+    AND id = v_first_id
     AND deleted_at IS NULL
   FOR UPDATE;
 
   IF NOT FOUND THEN
-    RAISE EXCEPTION 'Destination budget not found' USING ERRCODE = 'P0002';
+    RAISE EXCEPTION 'Budget not found' USING ERRCODE = 'P0002';
+  END IF;
+
+  SELECT * INTO v_second
+  FROM public.employee_budgets
+  WHERE org_id = p_org_id
+    AND id = v_second_id
+    AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Budget not found' USING ERRCODE = 'P0002';
+  END IF;
+
+  IF v_first.id = p_source_budget_id THEN
+    src := v_first;
+    dst := v_second;
+  ELSE
+    src := v_second;
+    dst := v_first;
   END IF;
 
   IF NOT public.can_access_employee(p_org_id, src.employee_id)
@@ -578,7 +662,8 @@ BEGIN
     RAISE EXCEPTION 'Source and destination currencies must match';
   END IF;
 
-  v_available := public.employee_budget_remaining_amount(p_source_budget_id);
+  v_available := public.employee_budget_current_amount_unlocked(p_source_budget_id)
+               - 0::numeric; -- actual training cost placeholder
   IF p_amount > v_available THEN
     RAISE EXCEPTION 'Reallocation exceeds available source budget';
   END IF;
@@ -616,6 +701,8 @@ BEGIN
 END;
 $$;
 
+REVOKE ALL ON FUNCTION public.employee_budget_assert_readable(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.employee_budget_current_amount_unlocked(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.employee_budget_current_amount(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.employee_budget_actual_training_cost(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.employee_budget_remaining_amount(uuid) FROM PUBLIC;
@@ -626,6 +713,11 @@ REVOKE ALL ON FUNCTION public.update_employee_budget_details(uuid, uuid, text, d
 REVOKE ALL ON FUNCTION public.adjust_employee_budget(uuid, uuid, text, numeric, text, date) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.reallocate_employee_budget(uuid, uuid, uuid, numeric, text, date) FROM PUBLIC;
 
+-- Internal helpers: not callable by clients (RPCs/view owner path only).
+GRANT EXECUTE ON FUNCTION public.employee_budget_assert_readable(uuid) TO service_role;
+GRANT EXECUTE ON FUNCTION public.employee_budget_current_amount_unlocked(uuid) TO service_role;
+
+-- Authorized read helpers + mutation RPCs for authenticated sessions.
 GRANT EXECUTE ON FUNCTION public.employee_budget_current_amount(uuid) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.employee_budget_actual_training_cost(uuid) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.employee_budget_remaining_amount(uuid) TO authenticated, service_role;
@@ -636,51 +728,32 @@ GRANT EXECUTE ON FUNCTION public.update_employee_budget_details(uuid, uuid, text
 GRANT EXECUTE ON FUNCTION public.adjust_employee_budget(uuid, uuid, text, numeric, text, date) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.reallocate_employee_budget(uuid, uuid, uuid, numeric, text, date) TO authenticated, service_role;
 
-GRANT SELECT, INSERT, UPDATE ON TABLE public.employee_budgets TO authenticated, service_role;
-GRANT SELECT, INSERT ON TABLE public.budget_adjustments TO authenticated, service_role;
-GRANT SELECT, INSERT ON TABLE public.budget_reallocations TO authenticated, service_role;
-GRANT SELECT ON TABLE public.org_document_counters TO authenticated, service_role;
+-- Table privileges: authenticated may SELECT only. Financial writes go through RPCs.
+REVOKE ALL ON TABLE public.employee_budgets FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON TABLE public.budget_adjustments FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON TABLE public.budget_reallocations FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON TABLE public.org_document_counters FROM PUBLIC, anon, authenticated;
+
+GRANT SELECT ON TABLE public.employee_budgets TO authenticated, service_role;
+GRANT SELECT ON TABLE public.budget_adjustments TO authenticated, service_role;
+GRANT SELECT ON TABLE public.budget_reallocations TO authenticated, service_role;
+GRANT ALL ON TABLE public.employee_budgets TO service_role;
+GRANT ALL ON TABLE public.budget_adjustments TO service_role;
+GRANT ALL ON TABLE public.budget_reallocations TO service_role;
 GRANT ALL ON TABLE public.org_document_counters TO service_role;
 
-REVOKE UPDATE, DELETE ON TABLE public.budget_adjustments FROM authenticated;
-REVOKE UPDATE, DELETE ON TABLE public.budget_reallocations FROM authenticated;
-REVOKE INSERT, UPDATE, DELETE ON TABLE public.org_document_counters FROM authenticated;
-
 -- ---------------------------------------------------------------------------
--- RLS
+-- RLS (read paths only for authenticated; mutations are RPC SECURITY DEFINER)
 -- ---------------------------------------------------------------------------
 ALTER TABLE public.org_document_counters ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.employee_budgets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.budget_adjustments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.budget_reallocations ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY org_document_counters_select_hr
-  ON public.org_document_counters FOR SELECT TO authenticated
-  USING (public.can_manage_budgets(org_id));
-
 CREATE POLICY employee_budgets_select_scoped
   ON public.employee_budgets FOR SELECT TO authenticated
   USING (
     deleted_at IS NULL
-    AND public.can_access_employee(org_id, employee_id)
-  );
-
-CREATE POLICY employee_budgets_insert_hr
-  ON public.employee_budgets FOR INSERT TO authenticated
-  WITH CHECK (
-    public.can_manage_budgets(org_id)
-    AND public.can_access_employee(org_id, employee_id)
-  );
-
-CREATE POLICY employee_budgets_update_hr
-  ON public.employee_budgets FOR UPDATE TO authenticated
-  USING (
-    deleted_at IS NULL
-    AND public.can_manage_budgets(org_id)
-    AND public.can_access_employee(org_id, employee_id)
-  )
-  WITH CHECK (
-    public.can_manage_budgets(org_id)
     AND public.can_access_employee(org_id, employee_id)
   );
 
@@ -697,29 +770,24 @@ CREATE POLICY budget_adjustments_select_scoped
     )
   );
 
-CREATE POLICY budget_adjustments_insert_hr
-  ON public.budget_adjustments FOR INSERT TO authenticated
-  WITH CHECK (public.can_manage_budgets(org_id));
-
+-- Require access to both sides so a transfer cannot reveal an unauthorized peer budget.
 CREATE POLICY budget_reallocations_select_scoped
   ON public.budget_reallocations FOR SELECT TO authenticated
   USING (
     EXISTS (
       SELECT 1
-      FROM public.employee_budgets b
-      WHERE b.org_id = budget_reallocations.org_id
-        AND b.deleted_at IS NULL
-        AND b.id IN (
-          budget_reallocations.source_budget_id,
-          budget_reallocations.destination_budget_id
-        )
-        AND public.can_access_employee(b.org_id, b.employee_id)
+      FROM public.employee_budgets src
+      JOIN public.employee_budgets dst
+        ON dst.org_id = src.org_id
+       AND dst.id = budget_reallocations.destination_budget_id
+      WHERE src.org_id = budget_reallocations.org_id
+        AND src.id = budget_reallocations.source_budget_id
+        AND src.deleted_at IS NULL
+        AND dst.deleted_at IS NULL
+        AND public.can_access_employee(src.org_id, src.employee_id)
+        AND public.can_access_employee(dst.org_id, dst.employee_id)
     )
   );
-
-CREATE POLICY budget_reallocations_insert_hr
-  ON public.budget_reallocations FOR INSERT TO authenticated
-  WITH CHECK (public.can_manage_budgets(org_id));
 
 -- List helper (security invoker respects underlying RLS)
 CREATE OR REPLACE VIEW public.v_employee_budget_list
