@@ -1373,43 +1373,15 @@ export default function BudgetsPage() {
           avatarChar: (row) => getInitials(row.fullName),
         }}
         mobileExcludeFromGrid={['budgetCode', 'fullName']}
-        actions={
-          <>
-            {canCreateBudgets ? (
-              <>
-                <button
-                  type="button"
-                  onClick={openImportModal}
-                  disabled={!orgId}
-                  className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)] disabled:opacity-60"
-                >
-                  <UploadIcon className="h-4 w-4" />
-                  Import
-                </button>
-                <button
-                  type="button"
-                  onClick={openNewModal}
-                  disabled={!orgId}
-                  className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)] disabled:opacity-60"
-                >
-                  <PlusGlyph className="h-4 w-4" />
-                  New Budget
-                </button>
-              </>
-            ) : null}
-          </>
-        }
         toolbar={
-          <TableSearchInput
-            id="budget-search"
-            value={searchTerm}
-            onChange={setSearchTerm}
-            placeholder="Search budgets…"
-          />
-        }
-        betweenHeaderAndTable={
-          <div className="space-y-2 px-4 pb-4 sm:px-6">
-            <div className="flex flex-wrap items-end gap-2">
+          <div className="flex w-full flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <TableSearchInput
+                id="budget-search"
+                value={searchTerm}
+                onChange={setSearchTerm}
+                placeholder="Search budgets…"
+              />
               <div className="min-w-[10rem]">
                 <Label htmlFor="budget-date-range" className="sr-only">
                   Date range
@@ -1433,7 +1405,7 @@ export default function BudgetsPage() {
               {dateRangePreset === 'custom' ? (
                 <>
                   <div className="min-w-[9rem]">
-                    <Label htmlFor="budget-custom-from" className="text-xs text-slate-600">
+                    <Label htmlFor="budget-custom-from" className="sr-only">
                       From
                     </Label>
                     <Input
@@ -1441,11 +1413,12 @@ export default function BudgetsPage() {
                       type="date"
                       value={customRangeFrom}
                       onChange={(e) => setCustomRangeFrom(e.target.value)}
-                      className="mt-1 h-9 text-sm"
+                      className="h-9 text-sm"
+                      aria-label="From date"
                     />
                   </div>
                   <div className="min-w-[9rem]">
-                    <Label htmlFor="budget-custom-to" className="text-xs text-slate-600">
+                    <Label htmlFor="budget-custom-to" className="sr-only">
                       To
                     </Label>
                     <Input
@@ -1453,7 +1426,8 @@ export default function BudgetsPage() {
                       type="date"
                       value={customRangeTo}
                       onChange={(e) => setCustomRangeTo(e.target.value)}
-                      className="mt-1 h-9 text-sm"
+                      className="h-9 text-sm"
+                      aria-label="To date"
                     />
                   </div>
                 </>
@@ -1484,6 +1458,32 @@ export default function BudgetsPage() {
               <p className="text-sm text-amber-800">{dateRangeError}</p>
             ) : null}
           </div>
+        }
+        actions={
+          <>
+            {canCreateBudgets ? (
+              <>
+                <button
+                  type="button"
+                  onClick={openImportModal}
+                  disabled={!orgId}
+                  className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)] disabled:opacity-60"
+                >
+                  <UploadIcon className="h-4 w-4" />
+                  Import
+                </button>
+                <button
+                  type="button"
+                  onClick={openNewModal}
+                  disabled={!orgId}
+                  className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)] disabled:opacity-60"
+                >
+                  <PlusGlyph className="h-4 w-4" />
+                  New Budget
+                </button>
+              </>
+            ) : null}
+          </>
         }
         renderCell={(row, key) => {
           if (key === 'fullName') {
