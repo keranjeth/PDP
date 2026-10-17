@@ -1,6 +1,6 @@
 import type { OrgMemberRole } from '@/lib/user-management/types';
 
-export type Resource = 'users' | 'employees' | 'settings' | '*';
+export type Resource = 'users' | 'employees' | 'settings' | 'budgets' | '*';
 export type Action = 'create' | 'read' | 'update' | 'delete';
 
 const ROLE_PERMISSIONS: Record<OrgMemberRole, Array<{ resource: Resource; actions: Action[] }>> =
@@ -8,18 +8,22 @@ const ROLE_PERMISSIONS: Record<OrgMemberRole, Array<{ resource: Resource; action
     super_admin: [{ resource: '*', actions: ['create', 'read', 'update', 'delete'] }],
     head_of_hr: [
       { resource: 'employees', actions: ['create', 'read', 'update', 'delete'] },
+      { resource: 'budgets', actions: ['create', 'read', 'update', 'delete'] },
       { resource: 'settings', actions: ['read', 'update'] },
     ],
     hr_national: [
       { resource: 'employees', actions: ['create', 'read', 'update'] },
+      { resource: 'budgets', actions: ['create', 'read', 'update'] },
       { resource: 'settings', actions: ['read'] },
     ],
     regional_hr: [
       { resource: 'employees', actions: ['create', 'read', 'update'] },
+      { resource: 'budgets', actions: ['create', 'read', 'update'] },
       { resource: 'settings', actions: ['read'] },
     ],
     employee: [
       { resource: 'employees', actions: ['read'] },
+      { resource: 'budgets', actions: ['read'] },
       { resource: 'settings', actions: ['read'] },
     ],
   };

@@ -39,9 +39,17 @@ Do **not** duplicate current employee details on every related table now.
 
 ---
 
-## Proposed: Budgets (not implemented)
+## Budgets (implemented locally — pending Supabase deploy)
 
 Authoritative source for approved employee training allocations.
+
+Local migration: `supabase/migrations/20261017140000_employee_training_budgets.sql`
+
+Tables: `employee_budgets` (employee FK only; no duplicated org attributes), `budget_adjustments`, `budget_reallocations`, `org_document_counters`.
+
+IDs: `BGT-YYYY-NNN`, `ADJ-YYYY-NNN`, `TRF-YYYY-NNN` (creation year; never rewritten when course date changes).
+
+Calculations (derived): Current = Initial + Increases − Decreases + Transfers In − Transfers Out; Remaining = Current − Actual Training Cost (0 until Training Records).
 
 | Field | Source |
 |---|---|
@@ -56,7 +64,7 @@ Authoritative source for approved employee training allocations.
 
 **Budget Year (unresolved):** Do not add a separate Budget Year field yet. Year can provisionally be derived from Planned Course Start Date for planning views. A separately assigned Budget Year may be required if the fiscal year differs from the calendar year of the course, or if allocations are carried forward/rescheduled. Changing a course date must **not** automatically rewrite an approved allocation’s financial year until that policy is decided.
 
-Future reallocations/adjustments should reference existing budget IDs via traceable transactions (not designed here).
+Adjustments and reallocations are stored as append-only transactions; original `initial_amount` is never overwritten by those operations.
 
 ---
 
@@ -107,7 +115,7 @@ Budget currency and training currency may differ. Do not add or subtract across 
 | Area | Status |
 |---|---|
 | Employees + auth + leavers | **Implemented** (local baseline; not deployed in this task) |
-| Budgets table / UI | **Proposed** |
+| Budgets table / UI | **Implemented locally** (migration not deployed) |
 | Training Records table / UI | **Proposed** |
 | Expenses ledger | **Not planned** as a duplicate store; future consolidated view |
 | Report fact tables | **Not planned**; derive from source tables |

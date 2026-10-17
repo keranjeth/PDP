@@ -1,10 +1,11 @@
 # PD Plan database
 
-## Baseline
+## Migrations (local; apply only after explicit approval)
 
-Apply only:
+1. `migrations/20261017120000_pd_plan_baseline.sql` — employees, auth, leavers
+2. `migrations/20261017140000_employee_training_budgets.sql` — employee budget allocations, adjustments, reallocations
 
-`migrations/20261017120000_pd_plan_baseline.sql`
+Do **not** apply these to a cloud project until reviewed.
 
 This is a self-contained schema for:
 
