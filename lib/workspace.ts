@@ -49,15 +49,15 @@ export async function ensureDefaultWorkspace(
     throw new Error('Account is not activated. Contact your administrator.');
   }
 
-  // Prevent unapproved signup from creating a private org + Super Admin when
-  // the organization already exists.
-  const { count: orgCount, error: orgCountErr } = await supabase
-    .from('organizations')
-    .select('id', { count: 'exact', head: true });
-  if (orgCountErr) {
-    throw orgCountErr;
+  // Use SECURITY DEFINER helper so RLS cannot hide an existing org and
+  // incorrectly allow a second bootstrap attempt.
+  const { data: orgsEmpty, error: emptyErr } = await supabase.rpc(
+    'organizations_is_empty'
+  );
+  if (emptyErr) {
+    throw emptyErr;
   }
-  if ((orgCount ?? 0) > 0) {
+  if (orgsEmpty !== true) {
     throw new Error('No active organization membership. Contact your administrator.');
   }
 

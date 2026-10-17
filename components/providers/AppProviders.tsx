@@ -16,8 +16,8 @@ import {
   getSupabaseBrowserClient,
 } from '@/lib/supabase/client';
 import { formatSupabaseError } from '@/lib/supabase/error-format';
+import { ensureWorkspaceAccess } from '@/lib/auth/ensure-workspace-access';
 import {
-  ensureDefaultWorkspace,
   fetchMembershipRole,
   fetchProfileFullName,
   formatOrgRoleLabel,
@@ -176,12 +176,11 @@ export function AppProviders({ children }: { children: ReactNode }) {
         const { configureEmployeeRemoteSync, hydrateEmployeesFromSupabase } =
           await import('@/lib/employee-remote-sync');
         try {
-          const { orgId: oid } = await ensureDefaultWorkspace(
-            supabase,
-            nextUser.id,
-            nameForWorkspace,
-            nextUser.email ?? undefined
-          );
+          const access = await ensureWorkspaceAccess(supabase, nextUser);
+          if (!access.ok) {
+            throw new Error(access.message);
+          }
+          const oid = access.orgId;
           setOrgId(oid);
 
           configureEmployeeRemoteSync(supabase, oid);

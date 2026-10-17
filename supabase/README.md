@@ -5,7 +5,11 @@
 1. `migrations/20261017120000_pd_plan_baseline.sql` — employees, auth, leavers
 2. `migrations/20261017140000_employee_training_budgets.sql` — employee budget allocations, adjustments, reallocations
 
-Budget financial writes are RPC-only for `authenticated` (table INSERT/UPDATE revoked). Do **not** apply these to a cloud project until reviewed.
+Budget financial writes are RPC-only for `authenticated` (table INSERT/UPDATE revoked).
+
+Also applied on the PD Plan project:
+
+3. `migrations/20261017160000_drop_obsolete_auth_provision_trigger.sql` — removes obsolete `app_users` auth trigger
 
 This is a self-contained schema for:
 

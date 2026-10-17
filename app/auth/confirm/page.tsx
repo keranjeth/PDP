@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AuthBackground, AuthFormCard } from '@/components/auth/AuthShell';
+import { ensureWorkspaceAccess } from '@/lib/auth/ensure-workspace-access';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 
 function AuthConfirmInner() {
@@ -42,6 +43,23 @@ function AuthConfirmInner() {
       const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
       if (exchangeError) {
         if (!cancelled) setError(exchangeError.message);
+        return;
+      }
+
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        if (!cancelled) setError('Unable to verify the signed-in account.');
+        return;
+      }
+
+      const access = await ensureWorkspaceAccess(supabase, user);
+      if (!access.ok) {
+        await supabase.auth.signOut().catch(() => null);
+        if (!cancelled) {
+          router.replace('/login?error=inactive');
+        }
         return;
       }
 

@@ -1,6 +1,7 @@
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { User } from '@supabase/supabase-js';
+import { ensureWorkspaceAccess } from '@/lib/auth/ensure-workspace-access';
 import { userMustChangePassword } from '@/lib/api/request-auth';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 
@@ -20,26 +21,25 @@ export async function getPathnameForLoginNextParam(): Promise<string> {
   return DEFAULT_NEXT_AFTER_LOGIN;
 }
 
-async function userHasActiveMembership(
-  supabase: SupabaseClient,
-  userId: string
-): Promise<boolean> {
-  const { data, error } = await supabase
-    .from('organization_members')
-    .select('status')
-    .eq('user_id', userId)
-    .eq('status', 'active')
-    .limit(1)
-    .maybeSingle();
-
-  if (error) {
-    return false;
+async function requireActiveWorkspaceOrRedirect(
+  supabase: NonNullable<Awaited<ReturnType<typeof createServerSupabaseClient>>>,
+  user: User
+): Promise<void> {
+  const access = await ensureWorkspaceAccess(supabase, user);
+  if (access.ok) {
+    return;
   }
-  return Boolean(data);
+
+  if (access.reason === 'error') {
+    console.error('Workspace access failed:', access.message);
+  }
+
+  redirect('/login?error=inactive');
 }
 
 /**
- * (main) layout: require session, active membership, and completed password change.
+ * (main) layout: require session, workspace access (bootstrap first org when empty),
+ * and completed password change.
  * If Supabase env is missing, allow through (local / unconfigured builds).
  */
 export async function requireUserForMainLayout(): Promise<void> {
@@ -59,10 +59,7 @@ export async function requireUserForMainLayout(): Promise<void> {
     redirect('/change-password');
   }
 
-  const active = await userHasActiveMembership(supabase, user.id);
-  if (!active) {
-    redirect('/login?error=inactive');
-  }
+  await requireActiveWorkspaceOrRedirect(supabase, user);
 }
 
 /**
@@ -84,8 +81,8 @@ export async function redirectToDashboardIfAuthed(): Promise<void> {
     redirect('/change-password');
   }
 
-  const active = await userHasActiveMembership(supabase, user.id);
-  if (!active) {
+  const access = await ensureWorkspaceAccess(supabase, user);
+  if (!access.ok) {
     redirect('/login?error=inactive');
   }
 

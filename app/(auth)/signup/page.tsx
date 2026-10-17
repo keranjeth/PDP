@@ -6,6 +6,7 @@ import {
   AuthFormCard,
   authInputClassName,
 } from '@/components/auth/AuthShell';
+import { ensureWorkspaceAccess } from '@/lib/auth/ensure-workspace-access';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/Button';
 import Link from 'next/link';
@@ -102,6 +103,21 @@ export default function SignupPage() {
     }
 
     if (data.session) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (user) {
+        const access = await ensureWorkspaceAccess(supabase, user);
+        if (!access.ok) {
+          await supabase.auth.signOut().catch(() => null);
+          setError(
+            access.reason === 'error'
+              ? access.message
+              : 'This account is pending activation or inactive. Contact your administrator.'
+          );
+          return;
+        }
+      }
       router.push('/dashboard');
       router.refresh();
       return;

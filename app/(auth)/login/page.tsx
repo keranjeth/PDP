@@ -6,6 +6,7 @@ import {
   AuthFormCard,
   authInputClassName,
 } from '@/components/auth/AuthShell';
+import { ensureWorkspaceAccess } from '@/lib/auth/ensure-workspace-access';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/Button';
 import Link from 'next/link';
@@ -105,21 +106,20 @@ function LoginContent() {
     const {
       data: { user },
     } = await supabase.auth.getUser();
-    if (user) {
-      const { data: activeMembership } = await supabase
-        .from('organization_members')
-        .select('status')
-        .eq('user_id', user.id)
-        .eq('status', 'active')
-        .limit(1)
-        .maybeSingle();
-      if (!activeMembership) {
-        await supabase.auth.signOut();
-        setError(
-          'This account is pending activation or inactive. Contact your administrator.'
-        );
-        return;
-      }
+    if (!user) {
+      setError('Unable to verify the signed-in account. Please try again.');
+      return;
+    }
+
+    const access = await ensureWorkspaceAccess(supabase, user);
+    if (!access.ok) {
+      await supabase.auth.signOut();
+      setError(
+        access.reason === 'error'
+          ? access.message
+          : 'This account is pending activation or inactive. Contact your administrator.'
+      );
+      return;
     }
 
     const next = searchParams.get('next') || '/dashboard';
