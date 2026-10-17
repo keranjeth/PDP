@@ -1,0 +1,142 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+
+  /* Forest Green Brand Palette */
+  --forest-green-50: #f1fcf4;
+  --forest-green-100: #dbf7e3;
+  --forest-green-200: #b8efc8;
+  --forest-green-300: #84e09d;
+  --forest-green-400: #4eca6d;
+  --forest-green-500: #23b44c;
+  --forest-green-600: #119f3d;
+  --forest-green-700: #009632;
+  --forest-green-800: #0b6f29;
+
+  /* Analytics Comparison Color System */
+  --analytics-budget: #16d187;
+  --analytics-budget-hover: #3bdb98;
+  --analytics-budget-soft: #7de8bc;
+  --analytics-budget-background: #e8fbf3;
+  --analytics-actual: #b2f5d4;
+  --analytics-actual-hover: #c4f8de;
+  --analytics-actual-soft: #d8fbeb;
+  --analytics-actual-background: #f2fef8;
+  --analytics-chart-grid-tint: #ecfdf5;
+  --analytics-tooltip-accent: #9defc9;
+  --analytics-legend-muted: #d6fae8;
+  --analytics-selected-fill: #a5f1cd;
+
+  /* Primary Color System */
+  --primary: var(--analytics-budget);
+  --primary-hover: var(--analytics-budget-hover);
+  --primary-pressed: var(--analytics-budget-hover);
+  --primary-light: var(--analytics-budget-background);
+  --primary-soft: var(--analytics-budget-soft);
+  --primary-border: var(--analytics-selected-fill);
+  --primary-muted: var(--analytics-actual);
+  --primary-strong: var(--analytics-budget);
+  
+  /* Semantic Colors */
+  --danger: #dc2626;
+  --danger-hover: #b91c1c;
+  --warning: #f59e0b;
+  --success: #10b981;
+  --info: #3b82f6;
+  
+  /* Neutral Colors */
+  --gray-50: #f9fafb;
+  --gray-100: #f3f4f6;
+  --gray-200: #e5e7eb;
+  --gray-300: #d1d5db;
+  --gray-400: #9ca3af;
+  --gray-500: #6b7280;
+  --gray-600: #4b5563;
+  --gray-700: #374151;
+  --gray-800: #1f2937;
+  --gray-900: #111827;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-light: var(--primary-light);
+  --color-primary-border: var(--primary-border);
+  --color-analytics-budget: var(--analytics-budget);
+  --color-analytics-budget-hover: var(--analytics-budget-hover);
+  --color-analytics-budget-soft: var(--analytics-budget-soft);
+  --color-analytics-budget-background: var(--analytics-budget-background);
+  --color-analytics-actual: var(--analytics-actual);
+  --color-analytics-actual-hover: var(--analytics-actual-hover);
+  --color-analytics-actual-soft: var(--analytics-actual-soft);
+  --color-analytics-actual-background: var(--analytics-actual-background);
+  --color-analytics-chart-grid-tint: var(--analytics-chart-grid-tint);
+  --color-analytics-tooltip-accent: var(--analytics-tooltip-accent);
+  --color-analytics-legend-muted: var(--analytics-legend-muted);
+  --color-analytics-selected-fill: var(--analytics-selected-fill);
+  --color-forest-green-50: var(--forest-green-50);
+  --color-forest-green-100: var(--forest-green-100);
+  --color-forest-green-200: var(--forest-green-200);
+  --color-forest-green-300: var(--forest-green-300);
+  --color-forest-green-400: var(--forest-green-400);
+  --color-forest-green-500: var(--forest-green-500);
+  --color-forest-green-600: var(--forest-green-600);
+  --color-forest-green-700: var(--forest-green-700);
+  --color-forest-green-800: var(--forest-green-800);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+a:not([class]) {
+  color: var(--primary);
+  transition: color 150ms ease;
+}
+
+a:not([class]):hover {
+  color: var(--primary-hover);
+}
+
+::selection {
+  background: var(--analytics-selected-fill);
+  color: var(--foreground);
+}
+
+:focus-visible {
+  outline-color: var(--analytics-budget-soft);
+}
+
+.brand-surface {
+  background-color: var(--primary-light);
+  border-color: var(--primary-border);
+}
+
+.brand-chip {
+  background-color: var(--primary-light);
+  color: var(--primary-strong);
+  border-color: var(--primary-border);
+}
+
+.brand-interactive {
+  color: var(--primary);
+}
+
+.brand-interactive:hover {
+  color: var(--primary-hover);
+}
