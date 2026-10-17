@@ -3,6 +3,7 @@ import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 import { getSupabaseAdminClient } from '@/lib/supabase/admin';
 import { guardProtectedApiUser } from '@/lib/api/request-auth';
+import { normalizeSeparationExitType } from '@/lib/separation';
 
 type OffboardRequestBody = {
   orgId: string;
@@ -18,34 +19,8 @@ type EmployeeStatusRow = {
   employment_status: 'active' | 'inactive' | null;
 };
 
-type SeparationExitType =
-  | 'resignation'
-  | 'termination'
-  | 'retirement'
-  | 'end_of_contract'
-  | 'death'
-  | 'redundancy'
-  | 'other';
-
-const SEPARATION_EXIT_TYPES = new Set<string>([
-  'resignation',
-  'termination',
-  'retirement',
-  'end_of_contract',
-  'death',
-  'redundancy',
-  'other',
-]);
-
 function isIsoDateOnly(value: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
-}
-
-function normalizeExitType(value: string): SeparationExitType | null {
-  const normalized = value.trim().toLowerCase();
-  return SEPARATION_EXIT_TYPES.has(normalized)
-    ? (normalized as SeparationExitType)
-    : null;
 }
 
 export async function POST(request: Request) {
@@ -97,11 +72,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'lastWorkingDate must be YYYY-MM-DD.' }, { status: 400 });
   }
   if (!body.exitType || typeof body.exitType !== 'string') {
-    return NextResponse.json({ error: 'exitType is required.' }, { status: 400 });
+    return NextResponse.json({ error: 'Separation Type is required.' }, { status: 400 });
   }
-  const exitType = normalizeExitType(body.exitType);
+  const exitType = normalizeSeparationExitType(body.exitType);
   if (!exitType) {
-    return NextResponse.json({ error: 'Unsupported exitType.' }, { status: 400 });
+    return NextResponse.json({ error: 'Unsupported Separation Type.' }, { status: 400 });
+  }
+  const leavingReason = String(body.leavingReason ?? '').trim();
+  if (!leavingReason) {
+    return NextResponse.json({ error: 'Separation Reason is required.' }, { status: 400 });
   }
   if (body.eligibleForRehire === false) {
     const note = String(body.rehireNote ?? '').trim();
@@ -160,7 +139,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Employee is already offboarded.' }, { status: 400 });
   }
 
-  const leavingReason = String(body.leavingReason ?? '').trim();
   const rehireNote = body.eligibleForRehire ? '' : String(body.rehireNote ?? '').trim();
 
   const { data: leaverId, error: offboardErr } = await admin.rpc(

@@ -26,6 +26,7 @@ import type { OrgMemberRole } from '@/lib/user-management/types';
 import { employeeFromLeaverSnapshot, fetchOrgLeavers, type LeaverSnapshotRow } from '@/lib/leavers';
 import { groupImportValidationErrors } from '@/lib/import-error-utils';
 import { dateToCalendarIso } from '@/lib/employee-dates';
+import { SEPARATION_EXIT_TYPE_OPTIONS } from '@/lib/separation';
 
 function calendarOrNull(value: Date | null | undefined) {
   return value instanceof Date ? dateToCalendarIso(value) : null;
@@ -38,6 +39,7 @@ function employeeRecordsForApi(records: EmployeeImportRecord[]) {
     joiningDate: calendarOrNull(record.joiningDate),
     contractStartDate: calendarOrNull(record.contractStartDate),
     contractEndDate: calendarOrNull(record.contractEndDate),
+    lastWorkingDate: calendarOrNull(record.lastWorkingDate),
   }));
 }
 
@@ -231,8 +233,6 @@ function EmployeesImportModal({
   stagedEmployeeFileName,
   groupedImportErrors,
   onClearEmployeeFile,
-  dateOrder,
-  onDateOrderChange,
   employeePreview,
 }: {
   isOpen: boolean;
@@ -252,8 +252,6 @@ function EmployeesImportModal({
   onDragLeave: (event: DragEvent<HTMLDivElement>) => void;
   onDragOver: (event: DragEvent<HTMLDivElement>) => void;
   onDrop: (event: DragEvent<HTMLDivElement>) => void;
-  dateOrder: 'DMY' | 'MDY';
-  onDateOrderChange: (order: 'DMY' | 'MDY') => void;
   employeePreview: string | null;
 }) {
   const showProgress = isImporting && importProgress;
@@ -369,19 +367,6 @@ function EmployeesImportModal({
             />
           ) : null}
 
-          <label className="block text-sm text-slate-700">
-            Ambiguous dates
-            <select
-              className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"
-              value={dateOrder}
-              onChange={(event) => onDateOrderChange(event.target.value === 'MDY' ? 'MDY' : 'DMY')}
-              disabled={isValidatingImport || isImporting}
-            >
-              <option value="DMY">Day / Month / Year</option>
-              <option value="MDY">Month / Day / Year</option>
-            </select>
-          </label>
-
           {pendingEmployeeImport ? (
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -490,7 +475,6 @@ export default function EmployeesPage() {
   const [isValidatingImport, setIsValidatingImport] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
-  const [importDateOrder, setImportDateOrder] = useState<'DMY' | 'MDY'>('DMY');
   const [employeePreviewText, setEmployeePreviewText] = useState<string | null>(null);
   const employeeImportFileRef = useRef<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -810,6 +794,18 @@ export default function EmployeesPage() {
     if (!orgId || offboardingEmployeeIds.length === 0) {
       return;
     }
+    if (!offboardLastWorkingDate) {
+      setOffboardError('Last Working Date is required.');
+      return;
+    }
+    if (!offboardExitType) {
+      setOffboardError('Separation Type is required.');
+      return;
+    }
+    if (!offboardLeavingReason.trim()) {
+      setOffboardError('Separation Reason is required.');
+      return;
+    }
     setOffboardSubmitting(true);
     setOffboardError(null);
     const idToName = new Map(filteredEmployeeRows.map((r) => [r.id, r.fullName]));
@@ -825,7 +821,7 @@ export default function EmployeesPage() {
               employeeId,
               lastWorkingDate: offboardLastWorkingDate,
               exitType: offboardExitType,
-              leavingReason: offboardLeavingReason,
+              leavingReason: offboardLeavingReason.trim(),
               eligibleForRehire: offboardEligibleForRehire,
               rehireNote: offboardEligibleForRehire ? null : offboardRehireNote,
             }),
@@ -961,7 +957,7 @@ export default function EmployeesPage() {
 
     try {
       employeeImportFileRef.current = file;
-      const result = await validateEmployeeImportFile(file, importDateOrder);
+      const result = await validateEmployeeImportFile(file);
 
       if (!result.ok) {
         setImportErrors(groupImportValidationErrors(result.errors));
@@ -983,13 +979,6 @@ export default function EmployeesPage() {
       setIsValidatingImport(false);
     }
   };
-
-  useEffect(() => {
-    const employeeFile = employeeImportFileRef.current;
-    if (employeeFile) void processImportFile(employeeFile);
-    // Re-parse only when the ambiguous-date rule changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [importDateOrder]);
 
   const handleFileSelection = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -1627,8 +1616,26 @@ export default function EmployeesPage() {
         <div className="space-y-3">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
+              <label className="text-sm font-medium text-slate-700" htmlFor="offboard-exit-type">
+                Separation Type
+              </label>
+              <select
+                id="offboard-exit-type"
+                value={offboardExitType}
+                onChange={(e) => setOffboardExitType(e.target.value)}
+                className="mt-1 h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-[var(--primary)]"
+                required
+              >
+                {SEPARATION_EXIT_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
               <label className="text-sm font-medium text-slate-700" htmlFor="offboard-last-working-date">
-                Last working date
+                Last Working Date
               </label>
               <input
                 id="offboard-last-working-date"
@@ -1636,38 +1643,22 @@ export default function EmployeesPage() {
                 value={offboardLastWorkingDate}
                 onChange={(e) => setOffboardLastWorkingDate(e.target.value)}
                 className="mt-1 h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-[var(--primary)]"
+                required
               />
-            </div>
-            <div>
-              <label className="text-sm font-medium text-slate-700" htmlFor="offboard-exit-type">
-                Exit type
-              </label>
-              <select
-                id="offboard-exit-type"
-                value={offboardExitType}
-                onChange={(e) => setOffboardExitType(e.target.value)}
-                className="mt-1 h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-[var(--primary)]"
-              >
-                <option value="resignation">Resignation</option>
-                <option value="end_of_contract">End of contract</option>
-                <option value="termination">Termination</option>
-                <option value="retirement">Retirement</option>
-                <option value="other">Other</option>
-              </select>
             </div>
           </div>
 
           <div>
             <label className="text-sm font-medium text-slate-700" htmlFor="offboard-reason">
-              Leaving reason
+              Separation Reason
             </label>
-            <textarea
+            <input
               id="offboard-reason"
+              type="text"
               value={offboardLeavingReason}
               onChange={(e) => setOffboardLeavingReason(e.target.value)}
-              rows={3}
-              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[var(--primary)]"
-              placeholder="Optional notes for HR records"
+              className="mt-1 h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-[var(--primary)]"
+              required
             />
           </div>
 
@@ -1718,11 +1709,6 @@ export default function EmployeesPage() {
         isValidatingImport={isValidatingImport}
         isImporting={isImporting}
         importProgress={importProgress}
-        dateOrder={importDateOrder}
-        onDateOrderChange={(order) => {
-          setEmployeePreviewText(null);
-          setImportDateOrder(order);
-        }}
         employeePreview={employeePreviewText}
         isDragActive={isDragActive}
         onDragEnter={handleDragEnter}

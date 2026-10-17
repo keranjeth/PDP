@@ -8,6 +8,7 @@ import { normalizeEmployeeId } from '@/lib/users/provisioning';
 import { provisionEmployeeAccountPending } from '@/lib/user-management/account-lifecycle';
 import { dateToCalendarIso } from '@/lib/employee-dates';
 import { guardProtectedApiUser } from '@/lib/api/request-auth';
+import { normalizeSeparationExitType } from '@/lib/separation';
 
 type ImportRequestBody = {
   orgId: string;
@@ -29,6 +30,7 @@ type EmployeeImportDbRow = {
   gender: 'male' | 'female' | null;
   date_of_birth: string | null;
   position_number: string | null;
+  reports_to_position_number: string | null;
   designation: string;
   staffing_category: string | null;
   department: string;
@@ -43,6 +45,9 @@ type EmployeeImportDbRow = {
   contract_start_date: string | null;
   contract_end_date: string | null;
   deleted_at: null;
+  separation_type: string | null;
+  separation_reason: string | null;
+  last_working_date: string | null;
 };
 
 function createConcurrencyLimiter(concurrency: number) {
@@ -77,7 +82,6 @@ function stripMissingEmployeeColumns(
   row: Record<string, unknown>,
   message: string
 ): Record<string, unknown> {
-  // PostgREST PGRST204: "Could not find the '<column>' column of 'employees' ..."
   const match = /Could not find the '([^']+)' column of 'employees'/i.exec(message);
   if (!match?.[1]) return row;
   const missing = match[1];
@@ -85,6 +89,32 @@ function stripMissingEmployeeColumns(
   const next = { ...row };
   delete next[missing];
   return next;
+}
+
+function employeeWriteRow(row: EmployeeImportDbRow): Record<string, unknown> {
+  return {
+    org_id: row.org_id,
+    id_number: row.id_number,
+    full_name: row.full_name,
+    gender: row.gender,
+    date_of_birth: row.date_of_birth,
+    position_number: row.position_number,
+    reports_to_position_number: row.reports_to_position_number,
+    designation: row.designation,
+    staffing_category: row.staffing_category,
+    department: row.department,
+    unit: row.unit,
+    region: row.region,
+    duty_station: row.duty_station,
+    job_location: row.job_location,
+    contract_type: row.contract_type,
+    job_status: row.job_status,
+    employment_status: row.employment_status,
+    joining_date: row.joining_date,
+    contract_start_date: row.contract_start_date,
+    contract_end_date: row.contract_end_date,
+    deleted_at: null,
+  };
 }
 
 async function upsertIndividuallyWithConcurrency(
@@ -140,15 +170,15 @@ async function provisionEmployeeAccountsReliable(params: {
 
   const admin = getSupabaseAdminClient();
 
-  // Chunk id_number lookups (PostgREST .in() practical limits).
   const uniqueIds = [...new Set(idNumbers.map((id) => normalizeEmployeeId(id)).filter(Boolean))];
   const byIdNumber = new Map<string, { id: string; id_number: string; full_name: string }>();
   for (let i = 0; i < uniqueIds.length; i += 200) {
     const chunk = uniqueIds.slice(i, i + 200);
     const { data: employeeRows } = await admin
       .from('employees')
-      .select('id,id_number,full_name,org_id')
+      .select('id,id_number,full_name,org_id,employment_status')
       .eq('org_id', orgId)
+      .eq('employment_status', 'active')
       .in('id_number', chunk);
     for (const r of employeeRows ?? []) {
       byIdNumber.set(String((r as { id_number: string }).id_number), {
@@ -165,8 +195,8 @@ async function provisionEmployeeAccountsReliable(params: {
       limit(async () => {
         const emp = byIdNumber.get(employeeId);
         if (!emp) {
-          summary.failed += 1;
-          summary.failures.push({ idNumber: employeeId, reason: 'employee_row_missing' });
+          // Inactive / missing rows are skipped — never provision former employees.
+          summary.skipped += 1;
           return;
         }
         try {
@@ -215,6 +245,8 @@ function importRecordToDbRow(orgId: string, r: EmployeeImportRecord): EmployeeIm
     return text ? text : null;
   };
 
+  const exitType = normalizeSeparationExitType(String(r.separationType ?? ''));
+
   return {
     org_id: orgId,
     id_number: String(r.idNumber ?? '').trim(),
@@ -222,6 +254,7 @@ function importRecordToDbRow(orgId: string, r: EmployeeImportRecord): EmployeeIm
     gender: r.gender === 'Male' ? 'male' : r.gender === 'Female' ? 'female' : null,
     date_of_birth: toDateOnly(r.dateOfBirth),
     position_number: blankText(r.positionNumber),
+    reports_to_position_number: blankText(r.reportsToPositionNumber),
     designation: String(r.designation ?? '').trim(),
     staffing_category: blankText(r.staffingCategory),
     department: String(r.department ?? '').trim(),
@@ -251,12 +284,16 @@ function importRecordToDbRow(orgId: string, r: EmployeeImportRecord): EmployeeIm
     contract_start_date: toDateOnly(r.contractStartDate),
     contract_end_date: toDateOnly(r.contractEndDate),
     deleted_at: null,
+    separation_type: exitType,
+    separation_reason: blankText(r.separationReason),
+    last_working_date: toDateOnly(r.lastWorkingDate),
   };
 }
 
 const PRESERVE_WHEN_BLANK = [
   'date_of_birth',
   'position_number',
+  'reports_to_position_number',
   'staffing_category',
   'unit',
   'region',
@@ -264,10 +301,67 @@ const PRESERVE_WHEN_BLANK = [
   'job_location',
   'contract_type',
   'job_status',
-  'employment_status',
   'contract_start_date',
   'contract_end_date',
 ] as const;
+
+function validateImportRows(rows: EmployeeImportDbRow[]): string[] {
+  const errors: string[] = [];
+  const seen = new Set<string>();
+
+  rows.forEach((row, index) => {
+    const label = `Employee ID ${row.id_number || `(row ${index + 1})`}`;
+
+    if (
+      !row.id_number ||
+      !row.full_name ||
+      !row.gender ||
+      !row.designation ||
+      !row.department ||
+      !row.joining_date ||
+      !row.employment_status
+    ) {
+      errors.push(`${label}: one or more required employee fields are missing.`);
+      return;
+    }
+
+    const key = row.id_number.toLowerCase();
+    if (seen.has(key)) {
+      errors.push(`${label}: Duplicate Employee ID within the uploaded file.`);
+    } else {
+      seen.add(key);
+    }
+
+    if (
+      row.contract_start_date &&
+      row.contract_end_date &&
+      row.contract_start_date > row.contract_end_date
+    ) {
+      errors.push(`${label}: Contract Start Date must not be later than Contract End Date.`);
+    }
+
+    if (row.employment_status === 'active') {
+      if (row.separation_type || row.separation_reason || row.last_working_date) {
+        errors.push(`${label}: Separation fields must be blank for an Active employee.`);
+      }
+      return;
+    }
+
+    if (!row.separation_type) {
+      errors.push(`${label}: Separation Type is required for an inactive employee.`);
+    }
+    if (!row.separation_reason) {
+      errors.push(`${label}: Separation Reason is required for an inactive employee.`);
+    }
+    if (!row.last_working_date) {
+      errors.push(`${label}: Last Working Date is required for an inactive employee.`);
+    } else if (row.joining_date && row.joining_date > row.last_working_date) {
+      errors.push(`${label}: Joining Date must not be later than Last Working Date.`);
+    }
+  });
+
+  return errors;
+}
 
 export async function POST(request: Request) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -327,28 +421,15 @@ export async function POST(request: Request) {
     );
   }
 
-  // Minimal server-side validation + transform. RLS enforces org membership/role.
   const rows = body.records.map((r) => importRecordToDbRow(body!.orgId, r));
-
-  const invalid = rows.find(
-    (row) =>
-      !row.id_number ||
-      !row.full_name ||
-      !row.gender ||
-      !row.designation ||
-      !row.department ||
-      !row.joining_date
-  );
-
-  if (invalid) {
+  const validationErrors = validateImportRows(rows);
+  if (validationErrors.length > 0) {
     return NextResponse.json(
-      { error: 'One or more records are missing required fields.' },
+      { error: validationErrors[0], errors: validationErrors.slice(0, 50) },
       { status: 400 }
     );
   }
 
-  // Determine caller role & scope to avoid whole-batch RLS failures.
-  // RLS is still authoritative; this pre-filtering just improves UX and provides a clearer response.
   const { data: membership, error: memErr } = await supabase
     .from('organization_members')
     .select('role,status')
@@ -366,11 +447,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Inactive user.' }, { status: 403 });
   }
 
-  // Restrict by role:
-  // - super_admin/head_of_hr: all
-  // - hr_national: exclude Senior Management
-  // - regional_hr: only assigned regions
-  // - employee: no imports
   let allowedRows = rows;
   let skipped = 0;
 
@@ -418,12 +494,6 @@ export async function POST(request: Request) {
     });
   }
 
-  // IMPORTANT:
-  // Employee upserts must run with consistent authentication context.
-  // In some deployments the SSR client may not propagate JWT claims to PostgREST
-  // during long-running imports, causing auth.uid() to be NULL and RLS to reject inserts.
-  // We therefore perform the actual write using the service role, AFTER enforcing
-  // the caller's role/scope in this API route.
   if (!secretKey) {
     return NextResponse.json(
       {
@@ -436,31 +506,64 @@ export async function POST(request: Request) {
 
   const adminDb = getSupabaseAdminClient();
 
-  // Blank optional cells must not wipe values already stored for that employee.
-  const existingByIdNumber = new Map<string, Record<string, unknown>>();
+  const existingByIdNumber = new Map<
+    string,
+    Record<string, unknown> & { employment_status?: string | null }
+  >();
   const idNumbers = allowedRows.map((row) => row.id_number);
   for (let i = 0; i < idNumbers.length; i += 200) {
     const chunk = idNumbers.slice(i, i + 200);
     const { data: existingRows, error: existingErr } = await adminDb
       .from('employees')
-      .select(['id_number', ...PRESERVE_WHEN_BLANK].join(','))
+      .select(['id_number', 'employment_status', ...PRESERVE_WHEN_BLANK].join(','))
       .eq('org_id', body.orgId)
       .in('id_number', chunk);
     if (existingErr) {
-      return NextResponse.json({ error: 'Unable to read existing employees before import.' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Unable to read existing employees before import.' },
+        { status: 400 }
+      );
     }
-    for (const existing of (existingRows ?? []) as unknown as Array<Record<string, unknown>>) {
+    for (const existing of (existingRows ?? []) as unknown as Array<
+      Record<string, unknown> & { employment_status?: string | null }
+    >) {
       existingByIdNumber.set(String(existing.id_number).toLowerCase(), existing);
     }
   }
+
+  const conflictErrors: string[] = [];
+  for (const row of allowedRows) {
+    const existing = existingByIdNumber.get(row.id_number.toLowerCase());
+    if (!existing) continue;
+    const existingStatus = String(existing.employment_status ?? '');
+    if (existingStatus === 'active' && row.employment_status === 'inactive') {
+      conflictErrors.push(
+        `Employee ID ${row.id_number} already exists with Active status. Review before changing status.`
+      );
+    } else if (existingStatus === 'inactive' && row.employment_status === 'active') {
+      conflictErrors.push(
+        `Employee ID ${row.id_number} already exists with Inactive status. Review before changing status.`
+      );
+    }
+  }
+
+  if (conflictErrors.length > 0) {
+    return NextResponse.json(
+      { error: conflictErrors[0], errors: conflictErrors.slice(0, 50) },
+      { status: 400 }
+    );
+  }
+
   let updatedExisting = 0;
   for (const row of allowedRows) {
     const existing = existingByIdNumber.get(row.id_number.toLowerCase());
     if (!existing) continue;
     updatedExisting += 1;
-    for (const key of PRESERVE_WHEN_BLANK) {
-      if (row[key] == null || row[key] === '') {
-        (row as Record<string, unknown>)[key] = existing[key] ?? null;
+    if (row.employment_status === 'active') {
+      for (const key of PRESERVE_WHEN_BLANK) {
+        if (row[key] == null || row[key] === '') {
+          (row as Record<string, unknown>)[key] = existing[key] ?? null;
+        }
       }
     }
   }
@@ -471,50 +574,99 @@ export async function POST(request: Request) {
       total: allowedRows.length,
       newRecords: allowedRows.length - updatedExisting,
       existingRecords: updatedExisting,
+      activeRecords: allowedRows.filter((r) => r.employment_status === 'active').length,
+      inactiveRecords: allowedRows.filter((r) => r.employment_status === 'inactive').length,
     });
   }
 
-  // Try bulk upsert first (fast path). If it fails (e.g. missing column / one row),
-  // fall back to per-row upserts so we can skip only the forbidden rows.
-  let rowsForUpsert: Array<Record<string, unknown>> = allowedRows;
-  let { data: bulkData, error: bulkErr } = await adminDb
-    .from('employees')
-    .upsert(rowsForUpsert, {
-      onConflict: 'org_id,id_number',
-    })
-    // Request a representation so we can confirm rows were actually written.
-    // Without this, a "successful" response can still hide the fact that 0 rows were affected.
-    .select('id_number');
+  const activeRows = allowedRows.filter((r) => r.employment_status === 'active');
+  const inactiveRows = allowedRows.filter((r) => r.employment_status === 'inactive');
 
-  if (bulkErr && bulkErr.code === 'PGRST204') {
-    const missingColumnMessage = String(bulkErr.message ?? '');
-    const stripped = rowsForUpsert.map((row) =>
-      stripMissingEmployeeColumns(row, missingColumnMessage)
-    );
-    const changed = stripped.some((row, i) => Object.keys(row).length < Object.keys(rowsForUpsert[i]).length);
-    if (changed) {
-      rowsForUpsert = stripped;
-      ({ data: bulkData, error: bulkErr } = await adminDb
-        .from('employees')
-        .upsert(rowsForUpsert, { onConflict: 'org_id,id_number' })
-        .select('id_number'));
+  const rlsSkipped: Array<{ idNumber: string; reason: string }> = [];
+  let imported = 0;
+
+  // Active employees: standard upsert (no Leavers records).
+  if (activeRows.length > 0) {
+    let rowsForUpsert: Array<Record<string, unknown>> = activeRows.map(employeeWriteRow);
+    let { data: bulkData, error: bulkErr } = await adminDb
+      .from('employees')
+      .upsert(rowsForUpsert, {
+        onConflict: 'org_id,id_number',
+      })
+      .select('id_number');
+
+    if (bulkErr && bulkErr.code === 'PGRST204') {
+      const missingColumnMessage = String(bulkErr.message ?? '');
+      const stripped = rowsForUpsert.map((row) =>
+        stripMissingEmployeeColumns(row, missingColumnMessage)
+      );
+      const changed = stripped.some(
+        (row, i) => Object.keys(row).length < Object.keys(rowsForUpsert[i]).length
+      );
+      if (changed) {
+        rowsForUpsert = stripped;
+        ({ data: bulkData, error: bulkErr } = await adminDb
+          .from('employees')
+          .upsert(rowsForUpsert, { onConflict: 'org_id,id_number' })
+          .select('id_number'));
+      }
+    }
+
+    imported = Array.isArray(bulkData) ? bulkData.length : 0;
+
+    if (bulkErr || imported === 0) {
+      imported = await upsertIndividuallyWithConcurrency(
+        adminDb,
+        rowsForUpsert,
+        16,
+        rlsSkipped
+      );
     }
   }
 
-  let imported = Array.isArray(bulkData) ? bulkData.length : 0;
-  const rlsSkipped: Array<{ idNumber: string; reason: string }> = [];
+  // Inactive employees: atomic employee + leaver via historical-import RPC.
+  // Fail the request if any inactive row cannot be saved cleanly.
+  for (const row of inactiveRows) {
+    const { error: rpcErr } = await adminDb.rpc('import_separated_employee', {
+      p_org_id: body.orgId,
+      p_imported_by: user.id,
+      p_id_number: row.id_number,
+      p_full_name: row.full_name,
+      p_gender: row.gender,
+      p_date_of_birth: row.date_of_birth,
+      p_position_number: row.position_number,
+      p_reports_to_position_number: row.reports_to_position_number,
+      p_designation: row.designation,
+      p_staffing_category: row.staffing_category,
+      p_department: row.department,
+      p_unit: row.unit,
+      p_region: row.region,
+      p_duty_station: row.duty_station,
+      p_job_location: row.job_location,
+      p_contract_type: row.contract_type,
+      p_job_status: row.job_status,
+      p_joining_date: row.joining_date,
+      p_contract_start_date: row.contract_start_date,
+      p_contract_end_date: row.contract_end_date,
+      p_last_working_date: row.last_working_date,
+      p_exit_type: row.separation_type,
+      p_leaving_reason: row.separation_reason,
+    });
 
-  if (bulkErr || imported === 0) {
-    imported = await upsertIndividuallyWithConcurrency(
-      adminDb,
-      rowsForUpsert,
-      16,
-      rlsSkipped
-    );
+    if (rpcErr) {
+      return NextResponse.json(
+        {
+          error: `Employee ID ${row.id_number}: ${rpcErr.message || 'Inactive employee import failed.'}`,
+          imported,
+          skipped: skipped + rlsSkipped.length,
+          rlsSkipped,
+        },
+        { status: 400 }
+      );
+    }
+    imported += 1;
   }
 
-  // Reliable Super Admin account provisioning: employee role + pending_activation.
-  // Passwords are never returned or logged.
   const isSuperAdmin = status === 'active' && role === 'super_admin';
 
   if (!isSuperAdmin) {
@@ -530,7 +682,8 @@ export async function POST(request: Request) {
     });
   }
 
-  const importedIdNumbers = allowedRows
+  // Provision login accounts only for Active imports — never for former employees.
+  const importedActiveIdNumbers = activeRows
     .filter((r) => !rlsSkipped.find((s) => s.idNumber === r.id_number))
     .map((r) => r.id_number);
 
@@ -539,9 +692,9 @@ export async function POST(request: Request) {
     Math.max(1, Number(body!.provisionBatchSize) || DEFAULT_PROVISION_BATCH)
   );
   const offset = Math.max(0, Number(body!.provisionOffset) || 0);
-  const batchIds = importedIdNumbers.slice(offset, offset + batchSize);
+  const batchIds = importedActiveIdNumbers.slice(offset, offset + batchSize);
   const nextOffset = offset + batchIds.length;
-  const hasMore = nextOffset < importedIdNumbers.length;
+  const hasMore = nextOffset < importedActiveIdNumbers.length;
 
   const provision = await provisionEmployeeAccountsReliable({
     orgId: body!.orgId,
@@ -558,11 +711,10 @@ export async function POST(request: Request) {
     usersFailed: provision.failed,
     userFailures: provision.failures.slice(0, 50),
     userProvisioning: hasMore ? 'partial' : 'completed',
-    provisionTotal: importedIdNumbers.length,
+    provisionTotal: importedActiveIdNumbers.length,
     provisionOffset: offset,
     provisionNextOffset: nextOffset,
     provisionHasMore: hasMore,
     provisionBatchSize: batchSize,
   });
 }
-

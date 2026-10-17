@@ -29,6 +29,10 @@ import { useAppAuth } from '@/components/providers/AppProviders';
 import { HeaderDivider } from '@/components/ui/HeaderDivider';
 import { Modal } from '@/components/ui/Modal';
 import { formatDisplayDateDMmmYYYY } from '@/lib/employee-dates';
+import {
+  formatSeparationExitTypeLabel,
+  SEPARATION_EXIT_TYPE_OPTIONS,
+} from '@/lib/separation';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { hydrateEmployeesFromSupabase } from '@/lib/employee-remote-sync';
 import type { OrgMemberRole } from '@/lib/user-management/types';
@@ -90,21 +94,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
 }
 
 function formatExitTypeStatus(exitType?: string | null) {
-  const normalized = String(exitType ?? '').trim().toLowerCase();
-  switch (normalized) {
-    case 'resignation':
-      return 'Resigned';
-    case 'termination':
-      return 'Terminated';
-    case 'retirement':
-      return 'Retired';
-    case 'end_of_contract':
-      return 'Contract ended';
-    default:
-      return normalized
-        ? normalized.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())
-        : 'Offboarded';
-  }
+  return formatSeparationExitTypeLabel(exitType);
 }
 
 function formatOffboardStatusLabel(summary?: OffboardStatusSummary | null) {
@@ -749,6 +739,18 @@ export default function EmployeeProfile({
 
   const submitOffboard = async () => {
     if (!orgId) return;
+    if (!offboardLastWorkingDate) {
+      setOffboardError('Last Working Date is required.');
+      return;
+    }
+    if (!offboardExitType) {
+      setOffboardError('Separation Type is required.');
+      return;
+    }
+    if (!offboardLeavingReason.trim()) {
+      setOffboardError('Separation Reason is required.');
+      return;
+    }
     setOffboardSubmitting(true);
     setOffboardError(null);
     try {
@@ -760,7 +762,7 @@ export default function EmployeeProfile({
           employeeId,
           lastWorkingDate: offboardLastWorkingDate,
           exitType: offboardExitType,
-          leavingReason: offboardLeavingReason,
+          leavingReason: offboardLeavingReason.trim(),
           eligibleForRehire: offboardEligibleForRehire,
           rehireNote: offboardEligibleForRehire ? null : offboardRehireNote,
         }),
@@ -1017,9 +1019,30 @@ export default function EmployeeProfile({
             <div>
               <label
                 className="text-sm font-medium text-slate-700"
+                htmlFor="profile-offboard-exit-type"
+              >
+                Separation Type
+              </label>
+              <select
+                id="profile-offboard-exit-type"
+                value={offboardExitType}
+                onChange={(e) => setOffboardExitType(e.target.value)}
+                className="mt-1 h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-[var(--primary)]"
+                required
+              >
+                {SEPARATION_EXIT_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label
+                className="text-sm font-medium text-slate-700"
                 htmlFor="profile-offboard-last-working-date"
               >
-                Last working date
+                Last Working Date
               </label>
               <input
                 id="profile-offboard-last-working-date"
@@ -1027,26 +1050,8 @@ export default function EmployeeProfile({
                 value={offboardLastWorkingDate}
                 onChange={(e) => setOffboardLastWorkingDate(e.target.value)}
                 className="mt-1 h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-[var(--primary)]"
+                required
               />
-            </div>
-            <div>
-              <label
-                className="text-sm font-medium text-slate-700"
-                htmlFor="profile-offboard-exit-type"
-              >
-                Exit type
-              </label>
-              <select
-                id="profile-offboard-exit-type"
-                value={offboardExitType}
-                onChange={(e) => setOffboardExitType(e.target.value)}
-                className="mt-1 h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-[var(--primary)]"
-              >
-                <option value="resignation">Resignation</option>
-                <option value="end_of_contract">End of contract</option>
-                <option value="termination">Termination</option>
-                <option value="retirement">Retirement</option>
-              </select>
             </div>
           </div>
 
@@ -1055,14 +1060,15 @@ export default function EmployeeProfile({
               className="text-sm font-medium text-slate-700"
               htmlFor="profile-offboard-reason"
             >
-              Leaving reason
+              Separation Reason
             </label>
-            <textarea
+            <input
               id="profile-offboard-reason"
+              type="text"
               value={offboardLeavingReason}
               onChange={(e) => setOffboardLeavingReason(e.target.value)}
-              rows={3}
-              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[var(--primary)]"
+              className="mt-1 h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-[var(--primary)]"
+              required
             />
           </div>
 

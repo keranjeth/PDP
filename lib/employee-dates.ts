@@ -23,9 +23,9 @@ function monthIndexFromName(name: string): number | null {
   return idx >= 0 ? idx : null;
 }
 
-/** Template sample row: d/m/yyyy (e.g. 15/1/2026). */
+/** Template sample / export: ISO calendar date YYYY-MM-DD. */
 export function formatDateForExcelTemplate(d: Date): string {
-  return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
+  return dateToCalendarIso(d) ?? '';
 }
 
 /** UI display: "1 Jan 2026" (day without leading zero). */
@@ -135,8 +135,6 @@ export function parseFlexibleDate(value: unknown): Date | null {
   return null;
 }
 
-export type ImportDateOrder = 'DMY' | 'MDY';
-
 export type ParsedImportDate =
   | { ok: true; iso: string }
   | { ok: false; blank: true }
@@ -190,10 +188,10 @@ function acceptIso(iso: string): ParsedImportDate {
 
 /**
  * Parse an import cell into YYYY-MM-DD.
- * Ambiguous numeric dates follow `order` (chosen in the import dialog).
- * Blank cells stay blank. Implausible years are rejected for review.
+ * Accepts genuine Excel date cells/serials and ISO strings (YYYY-MM-DD).
+ * Rejects ambiguous day/month slash dates — do not guess DMY vs MDY.
  */
-export function parseImportDate(value: unknown, order: ImportDateOrder = 'DMY'): ParsedImportDate {
+export function parseImportDate(value: unknown): ParsedImportDate {
   if (isBlankDateCell(value)) return { ok: false, blank: true };
 
   if (value instanceof Date) {
@@ -212,52 +210,29 @@ export function parseImportDate(value: unknown, order: ImportDateOrder = 'DMY'):
   if (/^\d+(\.\d+)?$/.test(trimmed)) {
     const serial = Number(trimmed);
     if (serial > 20000 && serial < 80000) {
-      return parseImportDate(serial, order);
+      return parseImportDate(serial);
     }
   }
 
-  const ymd = /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/.exec(trimmed);
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
   if (ymd) {
     const iso = calendarDateToIso(Number(ymd[1]), Number(ymd[2]), Number(ymd[3]));
-    return iso ? acceptIso(iso) : { ok: false, message: `${trimmed} is not a real calendar date.` };
+    return iso
+      ? acceptIso(iso)
+      : { ok: false, message: `${trimmed} is not a real calendar date. Use YYYY-MM-DD.` };
   }
 
-  const numeric = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$/.exec(trimmed);
-  if (numeric) {
-    let year = Number(numeric[3]);
-    if (year < 100) year += 2000;
-    const a = Number(numeric[1]);
-    const b = Number(numeric[2]);
-    let day = order === 'DMY' ? a : b;
-    let month = order === 'DMY' ? b : a;
-    if (a > 12 && b <= 12) {
-      day = a;
-      month = b;
-    } else if (b > 12 && a <= 12) {
-      day = b;
-      month = a;
-    }
-    const iso = calendarDateToIso(year, month, day);
-    return iso ? acceptIso(iso) : { ok: false, message: `${trimmed} is not a real calendar date.` };
+  if (/^\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}$/.test(trimmed)) {
+    return {
+      ok: false,
+      message: `${trimmed} is ambiguous. Use YYYY-MM-DD (for example 2026-10-31).`,
+    };
   }
 
-  const monthFirst = /^([A-Za-z]{3,})\s+(\d{1,2}),?\s+(\d{4})$/.exec(trimmed);
-  if (monthFirst) {
-    const month = monthIndexFromName(monthFirst[1]);
-    if (month === null) return { ok: false, message: `${trimmed} is not a recognized date.` };
-    const iso = calendarDateToIso(Number(monthFirst[3]), month + 1, Number(monthFirst[2]));
-    return iso ? acceptIso(iso) : { ok: false, message: `${trimmed} is not a real calendar date.` };
-  }
-
-  const named = /^(\d{1,2})[\s/.\-]+([A-Za-z]{3,})[\s/.\-]+(\d{4})$/.exec(trimmed);
-  if (named) {
-    const month = monthIndexFromName(named[2]);
-    if (month === null) return { ok: false, message: `${trimmed} is not a recognized date.` };
-    const iso = calendarDateToIso(Number(named[3]), month + 1, Number(named[1]));
-    return iso ? acceptIso(iso) : { ok: false, message: `${trimmed} is not a real calendar date.` };
-  }
-
-  return { ok: false, message: `${trimmed} is not a recognized date. Use DD/MM/YYYY, YYYY-MM-DD, or an Excel date.` };
+  return {
+    ok: false,
+    message: `${trimmed} is not a recognized date. Use YYYY-MM-DD or an Excel date cell.`,
+  };
 }
 
 export function payrollBaselineIso(payrollYear: number, overrideIso?: string | null): string | null {

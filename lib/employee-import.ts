@@ -4,26 +4,31 @@ import {
   formatDateForExcelTemplate,
   isoToLocalDate,
   parseImportDate,
-  type ImportDateOrder,
 } from './employee-dates';
+import {
+  normalizeSeparationExitType,
+  SEPARATION_EXIT_TYPE_OPTIONS,
+  type SeparationExitType,
+} from './separation';
 import { Employee } from './types';
 
 /**
  * Excel import: sheet "Employee Data", file Employee-Data.xlsx.
- * Columns are Personal → Job → Contract only (same order as the template).
- * Age and Length of Service are not import columns.
+ * Columns: Personal → Job → Contract → Separation.
+ * Age and Length of Service are calculated, not imported.
  */
 
 type EmployeeImportDateField =
   | 'dateOfBirth'
   | 'joiningDate'
   | 'contractStartDate'
-  | 'contractEndDate';
+  | 'contractEndDate'
+  | 'lastWorkingDate';
 
-type EmployeeImportStringField = Exclude<
-  keyof Omit<Employee, 'id' | 'createdAt'>,
-  EmployeeImportDateField
->;
+type EmployeeImportStringField =
+  | Exclude<keyof Omit<Employee, 'id' | 'createdAt'>, Exclude<EmployeeImportDateField, 'lastWorkingDate'>>
+  | 'separationType'
+  | 'separationReason';
 
 type EmployeeImportField = EmployeeImportStringField | EmployeeImportDateField;
 
@@ -32,12 +37,15 @@ export type EmployeeImportColumn = {
   header: string;
   type: 'string' | 'date';
   required: boolean;
-  /** For optional date cells: omit field vs default contract end */
-  dateWhenBlank?: 'skip' | 'contractEndDefault';
-  sectionTitle: 'Personal' | 'Job' | 'Contract';
+  dateWhenBlank?: 'skip';
+  sectionTitle: 'Personal' | 'Job' | 'Contract' | 'Separation';
 };
 
-export type EmployeeImportRecord = Omit<Employee, 'id' | 'createdAt'>;
+export type EmployeeImportRecord = Omit<Employee, 'id' | 'createdAt'> & {
+  separationType?: SeparationExitType;
+  separationReason?: string;
+  lastWorkingDate?: Date;
+};
 
 export type EmployeeImportValidationResult =
   | {
@@ -53,7 +61,6 @@ export type EmployeeImportValidationResult =
     };
 
 export const EMPLOYEE_IMPORT_COLUMNS: EmployeeImportColumn[] = [
-  // Personal (matches UI labels; Age omitted — calculated)
   {
     key: 'idNumber',
     header: 'ID Number',
@@ -83,10 +90,16 @@ export const EMPLOYEE_IMPORT_COLUMNS: EmployeeImportColumn[] = [
     dateWhenBlank: 'skip',
     sectionTitle: 'Personal',
   },
-  // Job
   {
     key: 'positionNumber',
     header: 'Position Number',
+    type: 'string',
+    required: false,
+    sectionTitle: 'Job',
+  },
+  {
+    key: 'reportsToPositionNumber',
+    header: 'Reports To Position Number',
     type: 'string',
     required: false,
     sectionTitle: 'Job',
@@ -140,7 +153,6 @@ export const EMPLOYEE_IMPORT_COLUMNS: EmployeeImportColumn[] = [
     required: false,
     sectionTitle: 'Job',
   },
-  // Contract
   {
     key: 'contractType',
     header: 'Contract Type',
@@ -159,7 +171,7 @@ export const EMPLOYEE_IMPORT_COLUMNS: EmployeeImportColumn[] = [
     key: 'employmentStatus',
     header: 'Employment Status',
     type: 'string',
-    required: false,
+    required: true,
     sectionTitle: 'Contract',
   },
   {
@@ -185,6 +197,28 @@ export const EMPLOYEE_IMPORT_COLUMNS: EmployeeImportColumn[] = [
     dateWhenBlank: 'skip',
     sectionTitle: 'Contract',
   },
+  {
+    key: 'separationType',
+    header: 'Separation Type',
+    type: 'string',
+    required: false,
+    sectionTitle: 'Separation',
+  },
+  {
+    key: 'separationReason',
+    header: 'Separation Reason',
+    type: 'string',
+    required: false,
+    sectionTitle: 'Separation',
+  },
+  {
+    key: 'lastWorkingDate',
+    header: 'Last Working Date',
+    type: 'date',
+    required: false,
+    dateWhenBlank: 'skip',
+    sectionTitle: 'Separation',
+  },
 ];
 
 export const TEMPLATE_SHEET_NAME = 'Employee Data';
@@ -194,8 +228,9 @@ const SAMPLE_IMPORT_RECORD: EmployeeImportRecord = {
   idNumber: '123456',
   fullName: 'Sample Employee',
   gender: 'Male',
-  dateOfBirth: new Date('1990-05-15'),
+  dateOfBirth: new Date(1990, 4, 15),
   positionNumber: 'POS-001',
+  reportsToPositionNumber: 'POS-100',
   designation: 'HR Officer',
   staffingCategory: 'National',
   department: 'Human Resources',
@@ -206,9 +241,9 @@ const SAMPLE_IMPORT_RECORD: EmployeeImportRecord = {
   contractType: 'Regular',
   jobStatus: 'Full-Time',
   employmentStatus: 'Active',
-  joiningDate: new Date('2026-01-15'),
-  contractStartDate: new Date('2026-01-15'),
-  contractEndDate: new Date('2026-12-31'),
+  joiningDate: new Date(2026, 0, 15),
+  contractStartDate: new Date(2026, 0, 15),
+  contractEndDate: new Date(2026, 11, 31),
 };
 
 const GENDER_VALUES = new Set<Employee['gender']>(['Male', 'Female']);
@@ -270,18 +305,18 @@ function headerIndexMap(headerRow: unknown[]) {
 function validateHeaderRow(headerRow: unknown[]) {
   const map = headerIndexMap(headerRow);
   const missing = EMPLOYEE_IMPORT_COLUMNS.filter(
-    (column) => column.required && !map.has(column.header.toLowerCase())
+    (column) => !map.has(column.header.toLowerCase())
   ).map((column) => column.header);
   if (missing.length > 0) {
-    return `Missing required columns: ${missing.join(', ')}. Match columns by header name; order does not matter.`;
+    return `Missing columns: ${missing.join(', ')}. Match columns by header name; order does not matter. Download a fresh template.`;
   }
   return null;
 }
 
 function isSampleRow(record: EmployeeImportRecord) {
   return EMPLOYEE_IMPORT_COLUMNS.every((column) => {
-    const sampleValue = SAMPLE_IMPORT_RECORD[column.key];
-    const recordValue = record[column.key];
+    const sampleValue = SAMPLE_IMPORT_RECORD[column.key as keyof EmployeeImportRecord];
+    const recordValue = record[column.key as keyof EmployeeImportRecord];
 
     if (column.type === 'date') {
       if (column.dateWhenBlank === 'skip') {
@@ -306,8 +341,7 @@ function parseRow(
   row: unknown[],
   rowNumber: number,
   seenIdNumbers: Set<string>,
-  columnsByHeader: Map<string, number>,
-  dateOrder: ImportDateOrder
+  columnsByHeader: Map<string, number>
 ): { record: EmployeeImportRecord | null; errors: string[] } {
   const errors: string[] = [];
   const record = {} as EmployeeImportRecord;
@@ -326,7 +360,7 @@ function parseRow(
         return;
       }
 
-      record[column.key] = normalized as never;
+      (record as Record<string, unknown>)[column.key] = normalized;
       return;
     }
 
@@ -337,19 +371,18 @@ function parseRow(
       return;
     }
 
-    const parsedDate = parseImportDate(cellValue, dateOrder);
+    const parsedDate = parseImportDate(cellValue);
     if (!parsedDate.ok) {
       errors.push(
         `Row ${rowNumber}: ${column.header} — ${
-          parsedDate.blank
-            ? 'is required.'
-            : parsedDate.message
+          parsedDate.blank ? 'is required.' : parsedDate.message
         }`
       );
       return;
     }
 
-    record[column.key] = (isoToLocalDate(parsedDate.iso) ?? undefined) as never;
+    (record as Record<string, unknown>)[column.key] =
+      isoToLocalDate(parsedDate.iso) ?? undefined;
   });
 
   if (errors.length > 0) {
@@ -361,17 +394,19 @@ function parseRow(
   }
 
   if (record.contractType && !CONTRACT_TYPE_VALUES.has(record.contractType)) {
-    errors.push(`Row ${rowNumber}: Contract Type must be Regular or Non-Regular, or left blank.`);
+    errors.push(
+      `Row ${rowNumber}: Contract Type must be Regular or Non-Regular, or left blank.`
+    );
   }
 
   if (record.jobStatus && !JOB_STATUS_VALUES.has(record.jobStatus)) {
-    errors.push(`Row ${rowNumber}: Job Status must be Full-Time or Part-Time, or left blank.`);
+    errors.push(
+      `Row ${rowNumber}: Job Status must be Full-Time or Part-Time, or left blank.`
+    );
   }
 
-  if (record.employmentStatus && !EMPLOYMENT_STATUS_VALUES.has(record.employmentStatus)) {
-    errors.push(
-      `Row ${rowNumber}: Employment Status must be Active or Inactive, or left blank.`
-    );
+  if (!record.employmentStatus || !EMPLOYMENT_STATUS_VALUES.has(record.employmentStatus)) {
+    errors.push(`Row ${rowNumber}: Employment Status must be Active or Inactive.`);
   }
 
   if (
@@ -380,8 +415,60 @@ function parseRow(
     record.contractEndDate < record.contractStartDate
   ) {
     errors.push(
-      `Row ${rowNumber}: Contract End Date cannot be earlier than Contract Start Date.`
+      `Row ${rowNumber}: Contract Start Date must not be later than Contract End Date.`
     );
+  }
+
+  const separationTypeRaw = String(
+    (record as { separationType?: string }).separationType ?? ''
+  ).trim();
+  const separationReason = String(
+    (record as { separationReason?: string }).separationReason ?? ''
+  ).trim();
+  const lastWorkingDate = record.lastWorkingDate;
+
+  if (record.employmentStatus === 'Active') {
+    if (separationTypeRaw || separationReason || lastWorkingDate) {
+      errors.push(
+        `Row ${rowNumber}: Separation fields must be blank for an Active employee.`
+      );
+    }
+    delete (record as { separationType?: unknown }).separationType;
+    delete (record as { separationReason?: unknown }).separationReason;
+    delete (record as { lastWorkingDate?: unknown }).lastWorkingDate;
+  } else if (record.employmentStatus === 'Inactive') {
+    if (!separationTypeRaw) {
+      errors.push(
+        `Row ${rowNumber}: Separation Type is required for an inactive employee.`
+      );
+    } else {
+      const normalizedType = normalizeSeparationExitType(separationTypeRaw);
+      if (!normalizedType) {
+        errors.push(
+          `Row ${rowNumber}: Separation Type must be one of: ${SEPARATION_EXIT_TYPE_OPTIONS.map((o) => o.label).join(', ')}.`
+        );
+      } else {
+        record.separationType = normalizedType;
+      }
+    }
+
+    if (!separationReason) {
+      errors.push(
+        `Row ${rowNumber}: Separation Reason is required for an inactive employee.`
+      );
+    } else {
+      record.separationReason = separationReason;
+    }
+
+    if (!lastWorkingDate) {
+      errors.push(
+        `Row ${rowNumber}: Last Working Date is required for an inactive employee.`
+      );
+    } else if (record.joiningDate && lastWorkingDate < record.joiningDate) {
+      errors.push(
+        `Row ${rowNumber}: Joining Date must not be later than Last Working Date.`
+      );
+    }
   }
 
   const normalizedIdNumber = record.idNumber.toLowerCase();
@@ -400,14 +487,25 @@ function parseRow(
 function buildTemplateRows() {
   const headerRow = EMPLOYEE_IMPORT_COLUMNS.map((column) => column.header);
   const sampleRow = EMPLOYEE_IMPORT_COLUMNS.map((column) => {
-    const value = SAMPLE_IMPORT_RECORD[column.key];
+    const value = SAMPLE_IMPORT_RECORD[column.key as keyof EmployeeImportRecord];
     if (column.type === 'date' && column.dateWhenBlank === 'skip' && !value) {
       return '';
     }
-    return value instanceof Date ? formatDateForExcelTemplate(value) : value;
+    return value instanceof Date ? formatDateForExcelTemplate(value) : (value ?? '');
   });
 
   return [headerRow, sampleRow];
+}
+
+function columnLetter(index1Based: number) {
+  let n = index1Based;
+  let letter = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    letter = String.fromCharCode(65 + rem) + letter;
+    n = Math.floor((n - 1) / 26);
+  }
+  return letter;
 }
 
 export function downloadEmployeeImportTemplate() {
@@ -452,7 +550,50 @@ export function downloadEmployeeImportTemplate() {
       }
     }
 
-    // Auto-fit columns (same heuristic as payroll export).
+    const dateColumns = EMPLOYEE_IMPORT_COLUMNS.map((column, index) =>
+      column.type === 'date' ? index + 1 : null
+    ).filter((v): v is number => v != null);
+
+    for (const col of dateColumns) {
+      ws.getColumn(col).numFmt = 'yyyy-mm-dd';
+      for (let r = 2; r <= Math.max(rowCount, 2); r += 1) {
+        const cell = ws.getRow(r).getCell(col);
+        if (typeof cell.value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(cell.value)) {
+          const [y, m, d] = cell.value.split('-').map(Number);
+          cell.value = new Date(y, m - 1, d);
+          cell.numFmt = 'yyyy-mm-dd';
+        }
+      }
+    }
+
+    const dropdowns: Array<{ header: string; values: string[] }> = [
+      { header: 'Gender', values: ['Male', 'Female'] },
+      { header: 'Contract Type', values: ['Regular', 'Non-Regular'] },
+      { header: 'Job Status', values: ['Full-Time', 'Part-Time'] },
+      { header: 'Employment Status', values: ['Active', 'Inactive'] },
+      {
+        header: 'Separation Type',
+        values: SEPARATION_EXIT_TYPE_OPTIONS.map((option) => option.label),
+      },
+    ];
+
+    for (const dropdown of dropdowns) {
+      const colIndex =
+        EMPLOYEE_IMPORT_COLUMNS.findIndex((column) => column.header === dropdown.header) + 1;
+      if (colIndex <= 0) continue;
+      const letter = columnLetter(colIndex);
+      // Apply validation for a large practical data-entry range.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (ws as any).dataValidations.add(`${letter}2:${letter}5000`, {
+        type: 'list',
+        allowBlank: true,
+        formulae: [`"${dropdown.values.join(',')}"`],
+        showErrorMessage: true,
+        errorTitle: 'Invalid value',
+        error: `Choose one of: ${dropdown.values.join(', ')}`,
+      });
+    }
+
     for (let col = 1; col <= columnCount; col += 1) {
       let maxLen = String(headers[col - 1]).length;
       ws.eachRow({ includeEmpty: false }, (row) => {
@@ -479,8 +620,7 @@ export function downloadEmployeeImportTemplate() {
 }
 
 export async function validateEmployeeImportFile(
-  file: File,
-  dateOrder: ImportDateOrder = 'DMY'
+  file: File
 ): Promise<EmployeeImportValidationResult> {
   if (!file.name.toLowerCase().endsWith('.xlsx')) {
     return {
@@ -517,15 +657,12 @@ export async function validateEmployeeImportFile(
     };
   }
 
-  const rows = XLSX.utils.sheet_to_json<(string | number | Date | null)[]>(
-    worksheet,
-    {
-      header: 1,
-      raw: true,
-      defval: '',
-      blankrows: false,
-    }
-  );
+  const rows = XLSX.utils.sheet_to_json<(string | number | Date | null)[]>(worksheet, {
+    header: 1,
+    raw: true,
+    defval: '',
+    blankrows: false,
+  });
 
   if (rows.length === 0) {
     return {
@@ -561,7 +698,7 @@ export async function validateEmployeeImportFile(
       return;
     }
 
-    const parsed = parseRow(row, rowNumber, seenIdNumbers, headerMap, dateOrder);
+    const parsed = parseRow(row, rowNumber, seenIdNumbers, headerMap);
     if (parsed.errors.length > 0) {
       errors.push(...parsed.errors);
       return;
