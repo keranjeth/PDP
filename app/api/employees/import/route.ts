@@ -28,12 +28,9 @@ type EmployeeImportDbRow = {
   full_name: string;
   gender: 'male' | 'female' | null;
   date_of_birth: string | null;
-  blood_group: string | null;
-  marital_status: string | null;
   position_number: string | null;
   designation: string;
   staffing_category: string | null;
-  overtime_group_name: string | null;
   department: string;
   unit: string | null;
   region: string | null;
@@ -45,7 +42,6 @@ type EmployeeImportDbRow = {
   joining_date: string | null;
   contract_start_date: string | null;
   contract_end_date: string | null;
-  currency: string;
   deleted_at: null;
 };
 
@@ -225,12 +221,9 @@ function importRecordToDbRow(orgId: string, r: EmployeeImportRecord): EmployeeIm
     full_name: String(r.fullName ?? '').trim(),
     gender: r.gender === 'Male' ? 'male' : r.gender === 'Female' ? 'female' : null,
     date_of_birth: toDateOnly(r.dateOfBirth),
-    blood_group: blankText(r.bloodGroup),
-    marital_status: blankText(r.maritalStatus),
     position_number: blankText(r.positionNumber),
     designation: String(r.designation ?? '').trim(),
     staffing_category: blankText(r.staffingCategory),
-    overtime_group_name: blankText(r.overtimeGroupName),
     department: String(r.department ?? '').trim(),
     unit: blankText(r.unit),
     region: blankText(r.region),
@@ -257,18 +250,14 @@ function importRecordToDbRow(orgId: string, r: EmployeeImportRecord): EmployeeIm
     joining_date: toDateOnly(r.joiningDate),
     contract_start_date: toDateOnly(r.contractStartDate),
     contract_end_date: toDateOnly(r.contractEndDate),
-    currency: String(r.currency ?? 'AFN'),
     deleted_at: null,
   };
 }
 
 const PRESERVE_WHEN_BLANK = [
   'date_of_birth',
-  'blood_group',
-  'marital_status',
   'position_number',
   'staffing_category',
-  'overtime_group_name',
   'unit',
   'region',
   'duty_station',

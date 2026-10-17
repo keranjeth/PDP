@@ -100,27 +100,7 @@ export async function syncEmployeesToSupabase(
     if (error) throw error;
   };
 
-  try {
-    await upsertEmployees(employeeRows);
-  } catch (err) {
-    const errObj = err as Record<string, unknown>;
-    const code = typeof errObj?.code === 'string' ? errObj.code : undefined;
-    const msg = typeof errObj?.message === 'string' ? errObj.message : String(err);
-    if (
-      code === 'PGRST204' &&
-      msg.includes('overtime_group_name') &&
-      employeeRows.some((r) => Object.prototype.hasOwnProperty.call(r, 'overtime_group_name'))
-    ) {
-      const rowsWithoutOvertimeGroup = employeeRows.map((r) => {
-        const copy = { ...(r as Record<string, unknown>) };
-        delete copy.overtime_group_name;
-        return copy;
-      });
-      await upsertEmployees(rowsWithoutOvertimeGroup);
-    } else {
-      throw err;
-    }
-  }
+  await upsertEmployees(employeeRows);
 }
 
 export async function softDeleteEmployeeRemote(

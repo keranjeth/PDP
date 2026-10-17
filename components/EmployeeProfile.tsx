@@ -347,10 +347,7 @@ function GroupPanel({
       { key: 'gender', label: 'Gender' },
       { key: 'dateOfBirth', label: 'Date of Birth' },
     ] as const;
-    const rightKeys = [
-      { key: 'bloodGroup', label: 'Blood Group' },
-      { key: 'maritalStatus', label: 'Marital Status' },
-    ] as const;
+    const rightKeys = [{ key: 'age', label: 'Age' }] as const;
 
     return (
       <ProfileTabCardShell title={activeTab}>

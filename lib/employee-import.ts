@@ -6,11 +6,6 @@ import {
   parseImportDate,
   type ImportDateOrder,
 } from './employee-dates';
-import {
-  BLOOD_GROUP_OPTIONS,
-  DEFAULT_CURRENCY,
-  MARITAL_STATUS_OPTIONS,
-} from './constants';
 import { Employee } from './types';
 
 /**
@@ -88,20 +83,6 @@ export const EMPLOYEE_IMPORT_COLUMNS: EmployeeImportColumn[] = [
     dateWhenBlank: 'skip',
     sectionTitle: 'Personal',
   },
-  {
-    key: 'bloodGroup',
-    header: 'Blood Group',
-    type: 'string',
-    required: false,
-    sectionTitle: 'Personal',
-  },
-  {
-    key: 'maritalStatus',
-    header: 'Marital Status',
-    type: 'string',
-    required: false,
-    sectionTitle: 'Personal',
-  },
   // Job
   {
     key: 'positionNumber',
@@ -120,13 +101,6 @@ export const EMPLOYEE_IMPORT_COLUMNS: EmployeeImportColumn[] = [
   {
     key: 'staffingCategory',
     header: 'Staffing Category',
-    type: 'string',
-    required: false,
-    sectionTitle: 'Job',
-  },
-  {
-    key: 'overtimeGroupName',
-    header: 'Overtime Group',
     type: 'string',
     required: false,
     sectionTitle: 'Job',
@@ -216,24 +190,14 @@ export const EMPLOYEE_IMPORT_COLUMNS: EmployeeImportColumn[] = [
 export const TEMPLATE_SHEET_NAME = 'Employee Data';
 export const TEMPLATE_FILE_NAME = 'Employee-Data.xlsx';
 
-const BLOOD_GROUP_VALUES = new Set<string>(
-  BLOOD_GROUP_OPTIONS.map((option) => option.value)
-);
-const MARITAL_STATUS_VALUES = new Set<string>(
-  MARITAL_STATUS_OPTIONS.map((option) => option.value)
-);
-
 const SAMPLE_IMPORT_RECORD: EmployeeImportRecord = {
   idNumber: '123456',
   fullName: 'Sample Employee',
   gender: 'Male',
   dateOfBirth: new Date('1990-05-15'),
-  bloodGroup: 'O+',
-  maritalStatus: 'Single',
   positionNumber: 'POS-001',
   designation: 'HR Officer',
   staffingCategory: 'National',
-  overtimeGroupName: 'Standard',
   department: 'Human Resources',
   unit: 'Operations',
   region: 'Central',
@@ -245,7 +209,6 @@ const SAMPLE_IMPORT_RECORD: EmployeeImportRecord = {
   joiningDate: new Date('2026-01-15'),
   contractStartDate: new Date('2026-01-15'),
   contractEndDate: new Date('2026-12-31'),
-  currency: DEFAULT_CURRENCY,
 };
 
 const GENDER_VALUES = new Set<Employee['gender']>(['Male', 'Female']);
@@ -393,8 +356,6 @@ function parseRow(
     return { record: null, errors };
   }
 
-  record.currency = DEFAULT_CURRENCY;
-
   if (!GENDER_VALUES.has(record.gender)) {
     errors.push(`Row ${rowNumber}: Gender must be Male or Female.`);
   }
@@ -413,18 +374,6 @@ function parseRow(
     );
   }
 
-  if (record.bloodGroup && !BLOOD_GROUP_VALUES.has(record.bloodGroup)) {
-    errors.push(
-      `Row ${rowNumber}: Blood Group must be one of: ${[...BLOOD_GROUP_VALUES].join(', ')} — or leave blank.`
-    );
-  }
-
-  if (record.maritalStatus && !MARITAL_STATUS_VALUES.has(record.maritalStatus)) {
-    errors.push(
-      `Row ${rowNumber}: Marital Status must be one of: ${[...MARITAL_STATUS_VALUES].join(', ')} — or leave blank.`
-    );
-  }
-
   if (
     record.contractStartDate &&
     record.contractEndDate &&
@@ -433,39 +382,6 @@ function parseRow(
     errors.push(
       `Row ${rowNumber}: Contract End Date cannot be earlier than Contract Start Date.`
     );
-  }
-
-  // Overtime Group is optional. Support Staff, when set, must be 8 / 10 / 12 Hours.
-  const staffingCategory = String(record.staffingCategory ?? '').trim().toLowerCase();
-  const isSupportStaff = staffingCategory === 'support staff';
-
-  const canonicalOvertimeGroupsByLower = new Map<string, string>([
-    ['8 hours', '8 Hours'],
-    ['10 hours', '10 Hours'],
-    ['12 hours', '12 Hours'],
-    ['standard', 'Standard'],
-  ]);
-
-  const rawOvertimeGroupName = String(record.overtimeGroupName ?? '').trim();
-  const overtimeGroupCanonical =
-    canonicalOvertimeGroupsByLower.get(rawOvertimeGroupName.toLowerCase()) ?? null;
-
-  if (rawOvertimeGroupName) {
-    if (!overtimeGroupCanonical) {
-      errors.push(
-        `Row ${rowNumber}: Overtime Group must be 8 Hours, 10 Hours, 12 Hours, or Standard, or left blank.`
-      );
-    } else if (isSupportStaff && overtimeGroupCanonical === 'Standard') {
-      errors.push(
-        `Row ${rowNumber}: Overtime Group for Support Staff must be 8 Hours, 10 Hours, or 12 Hours.`
-      );
-    } else if (!isSupportStaff && overtimeGroupCanonical !== 'Standard') {
-      errors.push(
-        `Row ${rowNumber}: Overtime Group must be Standard for non-support categories, or left blank.`
-      );
-    } else {
-      record.overtimeGroupName = overtimeGroupCanonical as never;
-    }
   }
 
   const normalizedIdNumber = record.idNumber.toLowerCase();

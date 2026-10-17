@@ -171,7 +171,7 @@ export function buildEmployeeRows(employees: Employee[]): DashboardEmployeeRow[]
     designation: employee.designation,
     department: employee.department,
     region: employee.region ?? '',
-    currency: employee.currency,
+    currency: '',
     createdAt: employee.createdAt,
   }));
 }

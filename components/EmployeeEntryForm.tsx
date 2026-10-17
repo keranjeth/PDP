@@ -6,13 +6,10 @@ import { Plus } from 'lucide-react';
 
 import type { Employee } from '@/lib/types';
 import {
-  BLOOD_GROUP_OPTIONS,
   CONTRACT_TYPE_OPTIONS,
-  DEFAULT_CURRENCY,
   EMPLOYEE_STATUS_OPTIONS,
   GENDER_OPTIONS,
   JOB_STATUS_OPTIONS,
-  MARITAL_STATUS_OPTIONS,
 } from '@/lib/constants';
 import { payrollStore } from '@/lib/store';
 import { format } from 'date-fns';
@@ -34,9 +31,6 @@ function subscribePayrollStore(onStoreChange: () => void) {
   return payrollStore.subscribe(onStoreChange);
 }
 
-/** Stable reference for useSyncExternalStore getServerSnapshot (must not return a new [] each call). */
-const SERVER_EMPLOYEES_SNAPSHOT: Employee[] = [];
-
 interface EmployeeFormProps {
   employeeId?: string;
   isNew?: boolean;
@@ -56,39 +50,10 @@ const steps: Array<{ key: StepKey; label: string }> = [
   { key: 'review', label: 'Review' },
 ];
 
-const STANDARD_OVERTIME_GROUP = 'Standard';
-
-const supportOvertimeGroupOptions: Option[] = [
-  { value: '8 Hours', label: '8 Hours' },
-  { value: '10 Hours', label: '10 Hours' },
-  { value: '12 Hours', label: '12 Hours' },
-];
-
-const currencyOptions: Option[] = [
-  { value: 'AFN', label: 'AFN' },
-  { value: 'USD', label: 'USD' },
-  { value: 'EUR', label: 'EUR' },
-];
-
 function setHoursSafe(d: Date) {
   const next = new Date(d);
   next.setHours(12, 0, 0, 0);
   return next;
-}
-
-function uniqueOptions(values: Array<string | undefined>, fallback: Option[] = []): Option[] {
-  const byValue = new Map<string, Option>();
-  for (const option of fallback) {
-    byValue.set(option.value, option);
-  }
-  for (const raw of values) {
-    const value = String(raw ?? '').trim();
-    if (!value || byValue.has(value)) {
-      continue;
-    }
-    byValue.set(value, { value, label: value });
-  }
-  return Array.from(byValue.values()).sort((a, b) => a.label.localeCompare(b.label));
 }
 
 function formatDateDisplay(value?: Date) {
@@ -258,29 +223,9 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
     () => null
   );
 
-  const existingEmployees = useSyncExternalStore(
-    subscribePayrollStore,
-    () => payrollStore.getEmployees(),
-    () => SERVER_EMPLOYEES_SNAPSHOT
-  );
-  const baseOptions = useMemo(
-    () => ({
-      designation: uniqueOptions(existingEmployees.map((employee) => employee.designation)),
-      staffingCategory: uniqueOptions(existingEmployees.map((employee) => employee.staffingCategory)),
-      department: uniqueOptions(existingEmployees.map((employee) => employee.department)),
-      unit: uniqueOptions(existingEmployees.map((employee) => employee.unit)),
-      region: uniqueOptions(existingEmployees.map((employee) => employee.region)),
-      dutyStation: uniqueOptions(existingEmployees.map((employee) => employee.dutyStation)),
-      jobLocation: uniqueOptions(existingEmployees.map((employee) => employee.jobLocation)),
-      currency: uniqueOptions(existingEmployees.map((employee) => employee.currency), currencyOptions),
-    }),
-    [existingEmployees]
-  );
-
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [formData, setFormData] = useState<Partial<Employee>>({});
-  const [customOptions, setCustomOptions] = useState<Record<string, Option[]>>({});
   const formSourceKey = isNew
     ? 'new'
     : existingEmployee?.id
@@ -309,10 +254,7 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
         fullName: '',
         gender: 'Male',
         dateOfBirth: undefined,
-        bloodGroup: '',
-        maritalStatus: '',
         staffingCategory: '',
-        overtimeGroupName: '',
         positionNumber: '',
         designation: '',
         department: '',
@@ -326,7 +268,6 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
         joiningDate: today,
         contractStartDate: undefined,
         contractEndDate: undefined,
-        currency: DEFAULT_CURRENCY,
       });
     }
   }
@@ -336,17 +277,6 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
   }, [formSourceKey]);
 
   const section = steps[stepIndex];
-  const currency = String(formData.currency ?? DEFAULT_CURRENCY);
-
-  const optionSet = (key: string, fallback: Option[]) =>
-    uniqueOptions([...(fallback.map((option) => option.value)), ...(customOptions[key] ?? []).map((o) => o.value)]);
-
-  const addCustomOption = (key: string, option: Option) => {
-    setCustomOptions((prev) => ({
-      ...prev,
-      [key]: uniqueOptions([...(prev[key] ?? []).map((o) => o.value), option.value]),
-    }));
-  };
 
   const handleEmployeeChange = <K extends keyof Employee>(key: K, value: Employee[K]) => {
     setFormData((prev) => ({ ...prev, [key]: value }));
@@ -362,22 +292,6 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
     const safe = next ? setHoursSafe(next) : undefined;
     setFormData((prev) => ({ ...prev, joiningDate: safe }));
   };
-
-  const isSupportStaffCategory = useMemo(() => {
-    return String(formData.staffingCategory ?? '').trim().toLowerCase() === 'support staff';
-  }, [formData.staffingCategory]);
-
-  // Support Staff needs an 8/10/12 Hours group. Other categories may leave overtime blank.
-  if (isSupportStaffCategory) {
-    const current = String(formData.overtimeGroupName ?? '').trim();
-    const allowed = new Set(supportOvertimeGroupOptions.map((o) => o.value));
-    if (!current || !allowed.has(current)) {
-      const fallback = supportOvertimeGroupOptions[0]?.value ?? STANDARD_OVERTIME_GROUP;
-      if (current !== fallback) {
-        setFormData((prev) => ({ ...prev, overtimeGroupName: fallback }));
-      }
-    }
-  }
 
   const validateStep = (idx: number): boolean => {
     const stepKey = steps[idx]?.key;
@@ -398,21 +312,6 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
       if (!(formData.joiningDate instanceof Date) || Number.isNaN(formData.joiningDate.getTime())) {
         next.joiningDate = 'Required';
       }
-
-      const isSupport = String(formData.staffingCategory ?? '')
-        .trim()
-        .toLowerCase() === 'support staff';
-      const groupName = String(formData.overtimeGroupName ?? '').trim();
-      const allowedSupport = new Set(supportOvertimeGroupOptions.map((o) => o.value));
-
-      if (isSupport) {
-        if (!groupName) next.overtimeGroupName = 'Overtime Group is required for Support Staff.';
-        else if (!allowedSupport.has(groupName)) {
-          next.overtimeGroupName = 'Support Staff must use overtime groups: 8 Hours / 10 Hours / 12 Hours.';
-        }
-      } else if (groupName && groupName !== STANDARD_OVERTIME_GROUP) {
-        next.overtimeGroupName = `Non-support staff must use "${STANDARD_OVERTIME_GROUP}", or leave overtime blank.`;
-      }
     }
 
     setErrors(next);
@@ -429,7 +328,7 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
     return true;
   };
 
-  const draftEmployeeForCalculation = useMemo<Employee>(() => {
+  const draftEmployeeForCalculation = useMemo(() => {
     const today = setHoursSafe(new Date());
     return {
       id: existingEmployee?.id ?? 'draft',
@@ -437,13 +336,10 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
       fullName: String(formData.fullName ?? ''),
       gender: (formData.gender as Employee['gender']) ?? 'Male',
       dateOfBirth: formData.dateOfBirth,
-      bloodGroup: formData.bloodGroup,
-      maritalStatus: formData.maritalStatus,
       positionNumber: String(formData.positionNumber ?? ''),
       reportsToPositionNumber: formData.reportsToPositionNumber,
       designation: String(formData.designation ?? ''),
       staffingCategory: String(formData.staffingCategory ?? ''),
-      overtimeGroupName: String(formData.overtimeGroupName ?? STANDARD_OVERTIME_GROUP),
       department: String(formData.department ?? ''),
       unit: String(formData.unit ?? ''),
       region: String(formData.region ?? ''),
@@ -455,10 +351,9 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
       joiningDate: formData.joiningDate ?? today,
       contractStartDate: formData.contractStartDate,
       contractEndDate: formData.contractEndDate,
-      currency,
       createdAt: existingEmployee?.createdAt ?? new Date(),
     };
-  }, [currency, existingEmployee, formData]);
+  }, [existingEmployee, formData]);
 
   const goNext = () => {
     if (!validateStep(stepIndex)) return;
@@ -480,7 +375,8 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
     setLoading(true);
     try {
       const employeeIdToSave = employeeId ?? crypto.randomUUID();
-      const normalized: Employee = {
+      const normalized = {
+        ...(existingEmployee ?? {}),
         ...draftEmployeeForCalculation,
         id: employeeIdToSave,
         idNumber: String(formData.idNumber ?? '').trim(),
@@ -489,7 +385,6 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
         reportsToPositionNumber: String(formData.reportsToPositionNumber ?? '').trim() || undefined,
         designation: String(formData.designation ?? '').trim(),
         staffingCategory: String(formData.staffingCategory ?? '').trim(),
-        overtimeGroupName: String(formData.overtimeGroupName ?? '').trim() || undefined,
         department: String(formData.department ?? '').trim(),
         unit: String(formData.unit ?? '').trim(),
         region: String(formData.region ?? '').trim(),
@@ -504,9 +399,8 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
           formData.contractEndDate instanceof Date
             ? setHoursSafe(formData.contractEndDate)
             : undefined,
-        currency,
         createdAt: existingEmployee?.createdAt ?? new Date(),
-      };
+      } as Employee;
 
       if (isNew) {
         payrollStore.addEmployee(normalized);
@@ -528,8 +422,6 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
 
   const selectOptions = {
     gender: GENDER_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
-    bloodGroup: BLOOD_GROUP_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
-    maritalStatus: MARITAL_STATUS_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
     contractType: CONTRACT_TYPE_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
     jobStatus: JOB_STATUS_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
     employmentStatus: EMPLOYEE_STATUS_OPTIONS.map((option) => ({
@@ -645,20 +537,6 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
                       className="h-11 rounded-md"
                     />
                   </Field>
-                  <CustomSelect
-                    label="Blood Group"
-                    value={String(formData.bloodGroup ?? '')}
-                    options={selectOptions.bloodGroup}
-                    placeholder="Select blood group..."
-                    onChange={(value) => handleEmployeeChange('bloodGroup', value as never)}
-                  />
-                  <CustomSelect
-                    label="Marital Status"
-                    value={String(formData.maritalStatus ?? '')}
-                    options={selectOptions.maritalStatus}
-                    placeholder="Select marital status..."
-                    onChange={(value) => handleEmployeeChange('maritalStatus', value as never)}
-                  />
                 </div>
               ) : null}
 
@@ -784,27 +662,6 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
                     placeholder="Select job status..."
                     onChange={(value) => handleEmployeeChange('jobStatus', value as never)}
                   />
-
-                  <CustomSelect
-                    label="Currency"
-                    value={currency}
-                    options={optionSet('currency', baseOptions.currency)}
-                    placeholder="Select currency..."
-                    onChange={(value) => handleEmployeeChange('currency', value as never)}
-                    onAddOption={(option) => addCustomOption('currency', option)}
-                  />
-
-                  {isSupportStaffCategory ? (
-                    <CustomSelect
-                      label="Overtime Group"
-                      required
-                      value={String(formData.overtimeGroupName ?? '')}
-                      options={supportOvertimeGroupOptions}
-                      placeholder="Select overtime group..."
-                      error={errors.overtimeGroupName}
-                      onChange={(value) => handleEmployeeChange('overtimeGroupName', value as never)}
-                    />
-                  ) : null}
                 </div>
               ) : null}
 
@@ -818,8 +675,6 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
                       { key: 'fullName', label: 'Full Name', value: String(formData.fullName ?? '') },
                       { key: 'gender', label: 'Gender', value: String(formData.gender ?? '') },
                       { key: 'dob', label: 'Date of Birth', value: formatDateDisplay(formData.dateOfBirth) },
-                      { key: 'bloodGroup', label: 'Blood Group', value: String(formData.bloodGroup ?? '') },
-                      { key: 'maritalStatus', label: 'Marital Status', value: String(formData.maritalStatus ?? '') },
                     ]}
                     rightRows={[
                       { key: 'positionNumber', label: 'Position Number', value: String(formData.positionNumber ?? '') },
@@ -843,11 +698,6 @@ export default function EmployeeEntryForm({ employeeId, isNew = false }: Employe
                     <ReviewDetailRow label="Contract End Date" value={formatDateDisplay(formData.contractEndDate)} />
                     <ReviewDetailRow label="Contract Type" value={String(formData.contractType ?? '')} />
                     <ReviewDetailRow label="Job Status" value={String(formData.jobStatus ?? '')} />
-                    <ReviewDetailRow label="Currency" value={String(formData.currency ?? DEFAULT_CURRENCY)} />
-                    <ReviewDetailRow
-                      label="Overtime Group"
-                      value={String(formData.overtimeGroupName ?? STANDARD_OVERTIME_GROUP)}
-                    />
                   </div>
                 </div>
               ) : null}

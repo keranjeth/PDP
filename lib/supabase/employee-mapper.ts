@@ -8,13 +8,10 @@ export type EmployeeRow = {
   full_name: string;
   gender: 'male' | 'female';
   date_of_birth: string | null;
-  blood_group: string | null;
-  marital_status: string | null;
   position_number: string | null;
   reports_to_position_number?: string | null;
   designation: string;
   staffing_category: string | null;
-  overtime_group_name?: string | null;
   department: string;
   unit: string | null;
   region: string | null;
@@ -26,7 +23,6 @@ export type EmployeeRow = {
   joining_date: string;
   contract_start_date: string | null;
   contract_end_date: string | null;
-  currency: string;
   created_at: string;
 };
 
@@ -37,13 +33,10 @@ export function employeeRowToEmployee(row: EmployeeRow): Employee {
     fullName: row.full_name,
     gender: row.gender === 'male' ? 'Male' : 'Female',
     dateOfBirth: row.date_of_birth ? isoToLocalDate(row.date_of_birth) ?? undefined : undefined,
-    bloodGroup: row.blood_group ?? undefined,
-    maritalStatus: row.marital_status ?? undefined,
     positionNumber: row.position_number ?? undefined,
     reportsToPositionNumber: row.reports_to_position_number?.trim() || undefined,
     designation: row.designation,
     staffingCategory: row.staffing_category ?? undefined,
-    overtimeGroupName: row.overtime_group_name ? String(row.overtime_group_name) : undefined,
     department: row.department,
     unit: row.unit ?? undefined,
     region: row.region ?? undefined,
@@ -74,7 +67,6 @@ export function employeeRowToEmployee(row: EmployeeRow): Employee {
     contractEndDate: row.contract_end_date
       ? isoToLocalDate(row.contract_end_date) ?? undefined
       : undefined,
-    currency: row.currency,
     createdAt: new Date(row.created_at),
   };
 }
@@ -90,13 +82,10 @@ export function employeeToInsertRow(
     full_name: employee.fullName,
     gender: employee.gender === 'Male' ? 'male' : 'female',
     date_of_birth: employee.dateOfBirth ? dateToCalendarIso(employee.dateOfBirth) : null,
-    blood_group: employee.bloodGroup || null,
-    marital_status: employee.maritalStatus || null,
     position_number: employee.positionNumber?.trim() || null,
     reports_to_position_number: employee.reportsToPositionNumber?.trim() || null,
     designation: employee.designation,
     staffing_category: employee.staffingCategory?.trim() || null,
-    overtime_group_name: employee.overtimeGroupName?.trim() || null,
     department: employee.department,
     unit: employee.unit?.trim() || null,
     region: employee.region?.trim() || null,
@@ -125,7 +114,6 @@ export function employeeToInsertRow(
       ? dateToCalendarIso(employee.contractStartDate)
       : null,
     contract_end_date: employee.contractEndDate ? dateToCalendarIso(employee.contractEndDate) : null,
-    currency: employee.currency,
     created_at: employee.createdAt.toISOString(),
     deleted_at: null,
   };

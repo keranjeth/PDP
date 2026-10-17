@@ -1,4 +1,3 @@
-import { DEFAULT_CURRENCY } from './constants';
 import { formatDisplayDateDMmmYYYY } from './employee-dates';
 import type { Employee } from './types';
 
@@ -26,8 +25,6 @@ export type EmployeeInformationSnapshot = {
     gender: string;
     dateOfBirth: string;
     age: string;
-    bloodGroup: string;
-    maritalStatus: string;
   };
   job: {
     positionNumber: string;
@@ -66,8 +63,7 @@ export const EMPLOYEE_INFORMATION_FIELDS: {
     { key: 'fullName', label: 'Full Name' },
     { key: 'gender', label: 'Gender' },
     { key: 'dateOfBirth', label: 'Date of Birth' },
-    { key: 'bloodGroup', label: 'Blood Group' },
-    { key: 'maritalStatus', label: 'Marital Status' },
+    { key: 'age', label: 'Age' },
   ],
   job: [
     { key: 'positionNumber', label: 'Position Number' },
@@ -162,8 +158,6 @@ export function buildEmployeeInformationSnapshot(employee: Employee): EmployeeIn
       gender: employee.gender,
       dateOfBirth: formatDisplayDate(employee.dateOfBirth),
       age: calculateAge(employee.dateOfBirth),
-      bloodGroup: employee.bloodGroup || '-',
-      maritalStatus: employee.maritalStatus || '-',
     },
     job: {
       positionNumber: employee.positionNumber || '-',
@@ -217,9 +211,4 @@ export function buildEmployeeProfileHref(employeeId: string, tab?: string | null
     return `/employees/${employeeId}`;
   }
   return `/employees/${employeeId}?tab=${encodeURIComponent(tab)}`;
-}
-
-/** Currency label for profile chrome (employee master only). */
-export function employeeDisplayCurrency(employee: Employee): string {
-  return employee.currency || DEFAULT_CURRENCY;
 }

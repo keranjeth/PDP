@@ -124,7 +124,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error: missing
-          ? 'Bulk delete is not available yet. Apply migration 20261011180000_hard_delete_employees_bulk.sql, then retry.'
+          ? 'Bulk delete is not available yet. Apply the PD Plan baseline migration, then retry.'
           : detail
             ? `Permanent delete failed: ${detail}`
             : 'Permanent delete failed.',

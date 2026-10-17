@@ -22,7 +22,6 @@ export type LeaverSnapshotRow = {
   joining_date: string;
   contract_start_date: string;
   contract_end_date: string;
-  currency: string;
   created_at: string;
   offboarded_at: string;
   last_working_date: string;
@@ -44,13 +43,10 @@ export function employeeFromLeaverSnapshot(row: LeaverSnapshotRow): Employee {
     fullName: row.full_name,
     gender: row.gender === 'male' ? 'Male' : 'Female',
     dateOfBirth: undefined,
-    bloodGroup: undefined,
-    maritalStatus: undefined,
     positionNumber: row.position_number,
     reportsToPositionNumber: row.reports_to_position_number ?? undefined,
     designation: row.designation,
     staffingCategory: row.staffing_category,
-    overtimeGroupName: 'Standard',
     department: row.department,
     unit: row.unit,
     region: row.region,
@@ -62,7 +58,6 @@ export function employeeFromLeaverSnapshot(row: LeaverSnapshotRow): Employee {
     joiningDate: toDate(row.joining_date),
     contractStartDate: toDate(row.contract_start_date),
     contractEndDate: toDate(row.contract_end_date),
-    currency: row.currency,
     createdAt: toDate(row.offboarded_at ?? row.created_at),
   };
 }
@@ -95,7 +90,6 @@ export async function fetchOrgLeavers(
         'joining_date',
         'contract_start_date',
         'contract_end_date',
-        'currency',
         'created_at',
         'offboarded_at',
         'last_working_date',
@@ -112,15 +106,5 @@ export async function fetchOrgLeavers(
     throw error;
   }
 
-  const rows = (data ?? []) as unknown as LeaverSnapshotRow[];
-  // For the Leavers tab we want one row per employee: show the most recent offboarding event.
-  const seen = new Set<string>();
-  const latest: LeaverSnapshotRow[] = [];
-  for (const row of rows) {
-    if (seen.has(row.employee_id)) continue;
-    seen.add(row.employee_id);
-    latest.push(row);
-  }
-  return latest;
+  return (data ?? []) as unknown as LeaverSnapshotRow[];
 }
-

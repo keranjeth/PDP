@@ -187,97 +187,10 @@ export async function POST(request: Request) {
     leaverId != null && String(leaverId).trim() !== ''
       ? String(leaverId).trim()
       : null;
-  const approvedAt = new Date().toISOString();
-
-  const separationPayload = {
-    org_id: body.orgId,
-    employee_id: body.employeeId,
-    leaver_id: leaverIdValue,
-    exit_type: exitType,
-    reason_code: leavingReason || null,
-    last_working_date: body.lastWorkingDate,
-    notice_required_days: 0,
-    notice_served_days: 0,
-    notice_action: 'none',
-    eligible_for_leave_encashment: false,
-    eligible_for_termination_benefit: false,
-    status: 'ready_for_payroll',
-    notes: [
-      leavingReason ? `Leaving reason: ${leavingReason}` : '',
-      body.eligibleForRehire ? 'Eligible for rehire: yes' : 'Eligible for rehire: no',
-      rehireNote ? `Rehire note: ${rehireNote}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n'),
-    created_by: user.id,
-    updated_by: user.id,
-    approved_at: approvedAt,
-    approved_by: user.id,
-  };
-
-  const { data: existingCase, error: existingCaseErr } = await admin
-    .from('separation_cases')
-    .select('id,status')
-    .eq('org_id', body.orgId)
-    .eq('employee_id', body.employeeId)
-    .in('status', ['draft', 'pending_approval', 'approved', 'ready_for_payroll'])
-    .maybeSingle();
-
-  if (existingCaseErr) {
-    return NextResponse.json({ error: existingCaseErr.message }, { status: 400 });
-  }
-
-  const separationCaseId = (existingCase as { id?: string } | null)?.id;
-  const separationCaseResult = separationCaseId
-    ? await admin
-        .from('separation_cases')
-        .update({
-          org_id: separationPayload.org_id,
-          employee_id: separationPayload.employee_id,
-          leaver_id: separationPayload.leaver_id,
-          exit_type: separationPayload.exit_type,
-          reason_code: separationPayload.reason_code,
-          last_working_date: separationPayload.last_working_date,
-          notice_required_days: separationPayload.notice_required_days,
-          notice_served_days: separationPayload.notice_served_days,
-          notice_action: separationPayload.notice_action,
-          eligible_for_leave_encashment:
-            separationPayload.eligible_for_leave_encashment,
-          eligible_for_termination_benefit:
-            separationPayload.eligible_for_termination_benefit,
-          status: separationPayload.status,
-          notes: separationPayload.notes,
-          updated_by: separationPayload.updated_by,
-          approved_at: separationPayload.approved_at,
-          approved_by: separationPayload.approved_by,
-        })
-        .eq('org_id', body.orgId)
-        .eq('id', separationCaseId)
-        .select('id')
-        .single()
-    : await admin
-        .from('separation_cases')
-        .insert(separationPayload)
-        .select('id')
-        .single();
-
-  if (separationCaseResult.error) {
-    return NextResponse.json(
-      {
-        error: separationCaseResult.error.message,
-        offboarded: true,
-        leaverId: leaverIdValue,
-      },
-      { status: 207 }
-    );
-  }
 
   return NextResponse.json({
     ok: true,
     leaverId: leaverIdValue,
-    separationCaseId: String(
-      (separationCaseResult.data as { id?: string } | null)?.id ?? ''
-    ),
   });
 }
 
