@@ -31,6 +31,7 @@ import { PlusGlyph, TableSearchInput } from '@/components/ui/table-controls';
 import {
   downloadBudgetImportTemplate,
   validateBudgetImportFile,
+  type BudgetImportPreviewRow,
   type BudgetImportRecord,
 } from '@/lib/budget-import';
 import {
@@ -74,6 +75,16 @@ type PendingBudgetImport = {
   fileName: string;
   records: BudgetImportRecord[];
   skippedSampleRow: boolean;
+};
+
+type BudgetImportPreviewState = {
+  total: number;
+  valid: number;
+  invalid: number;
+  potentialDuplicates: number;
+  totalsByCurrency: Record<string, number>;
+  previewRows: BudgetImportPreviewRow[];
+  importId: string;
 };
 
 type CurrencyTotals = {
@@ -431,7 +442,7 @@ function BudgetsImportModal({
   stagedFileName,
   groupedImportErrors,
   onClearFile,
-  budgetPreview,
+  importPreview,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -449,11 +460,12 @@ function BudgetsImportModal({
   onDragLeave: (event: DragEvent<HTMLDivElement>) => void;
   onDragOver: (event: DragEvent<HTMLDivElement>) => void;
   onDrop: (event: DragEvent<HTMLDivElement>) => void;
-  budgetPreview: string | null;
+  importPreview: BudgetImportPreviewState | null;
 }) {
   const budgetFileName = pendingImport?.fileName ?? stagedFileName ?? null;
   const showLargeDropZone = !budgetFileName;
   const removeDisabled = isValidatingImport || isImporting;
+  const currencyTotals = importPreview?.totalsByCurrency ?? {};
 
   return (
     <ImportModalShell
@@ -472,7 +484,9 @@ function BudgetsImportModal({
           </div>
           <div className="text-center">
             <p className="text-[22px] font-semibold text-slate-950">Importing budgets</p>
-            <p className="mt-2 text-[15px] text-slate-500">Creating budget allocations from your file…</p>
+            <p className="mt-2 text-[15px] text-slate-500">
+              Creating all allocations in one secure transaction…
+            </p>
           </div>
         </div>
       ) : (
@@ -526,31 +540,109 @@ function BudgetsImportModal({
             />
           ) : null}
 
-          {pendingImport ? (
+          {pendingImport && !importPreview ? (
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <p className="text-sm font-medium text-emerald-900">Ready to import</p>
+                  <p className="text-sm font-medium text-emerald-900">File ready for review</p>
                   <p className="mt-1 text-sm text-emerald-800">
-                    {pendingImport.records.length} budget rows validated successfully.
+                    {pendingImport.records.length} budget rows passed spreadsheet validation.
                   </p>
                   {pendingImport.skippedSampleRow ? (
                     <p className="mt-2 text-sm text-emerald-700">
-                      The sample template row was detected and ignored.
+                      The sample template row (`__PDP_SAMPLE__`) was detected and ignored.
                     </p>
-                  ) : null}
-                  {budgetPreview ? (
-                    <p className="mt-2 text-sm text-emerald-900">{budgetPreview}</p>
                   ) : null}
                 </div>
                 <Button
                   type="button"
                   className="w-full !rounded-xl !bg-[var(--primary)] px-5 py-2.5 !text-sm font-semibold hover:!bg-[var(--primary-hover)] sm:w-auto"
                   onClick={onImport}
-                  disabled={isValidatingImport}
+                  disabled={isValidatingImport || isImporting}
                 >
-                  {budgetPreview ? 'Confirm Import' : 'Review Import'}
+                  {isValidatingImport ? 'Reviewing…' : 'Review Import'}
                 </Button>
+              </div>
+            </div>
+          ) : null}
+
+          {importPreview ? (
+            <div className="space-y-4 rounded-2xl border border-emerald-200 bg-emerald-50/60 px-5 py-4">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-sm font-medium text-emerald-900">Import preview</p>
+                  <p className="mt-1 text-sm text-emerald-800">
+                    Total {importPreview.total} · Valid {importPreview.valid} · Invalid{' '}
+                    {importPreview.invalid} · Potential duplicates {importPreview.potentialDuplicates}
+                  </p>
+                  <p className="mt-2 text-sm text-emerald-900">
+                    Proposed totals — AFN {formatCurrency(currencyTotals.AFN ?? 0, 'AFN')} · USD{' '}
+                    {formatCurrency(currencyTotals.USD ?? 0, 'USD')} · EUR{' '}
+                    {formatCurrency(currencyTotals.EUR ?? 0, 'EUR')}
+                  </p>
+                  {importPreview.potentialDuplicates > 0 ? (
+                    <p className="mt-2 text-sm font-medium text-amber-800">
+                      Potential duplicates require explicit confirmation. Existing budgets will not be
+                      merged or overwritten.
+                    </p>
+                  ) : null}
+                </div>
+                <Button
+                  type="button"
+                  className="w-full !rounded-xl !bg-[var(--primary)] px-5 py-2.5 !text-sm font-semibold hover:!bg-[var(--primary-hover)] sm:w-auto"
+                  onClick={onImport}
+                  disabled={isValidatingImport || isImporting}
+                >
+                  {isImporting
+                    ? 'Importing…'
+                    : importPreview.potentialDuplicates > 0
+                      ? 'Confirm duplicates & import'
+                      : 'Confirm Import'}
+                </Button>
+              </div>
+
+              <div className="max-h-72 overflow-auto rounded-xl border border-emerald-200 bg-white">
+                <table className="min-w-full text-left text-xs text-slate-800">
+                  <thead className="sticky top-0 bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">Row</th>
+                      <th className="px-3 py-2">Employee ID</th>
+                      <th className="px-3 py-2">Verified name</th>
+                      <th className="px-3 py-2">Status</th>
+                      <th className="px-3 py-2">Course</th>
+                      <th className="px-3 py-2">Budget</th>
+                      <th className="px-3 py-2">Currency</th>
+                      <th className="px-3 py-2">Start</th>
+                      <th className="px-3 py-2">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importPreview.previewRows.map((row) => (
+                      <tr
+                        key={`${row.rowNumber}-${row.employeeIdNumber}-${row.plannedCourse}`}
+                        className={
+                          row.isPotentialDuplicate ? 'bg-amber-50/80' : 'border-t border-slate-100'
+                        }
+                      >
+                        <td className="px-3 py-2 tabular-nums">{row.rowNumber}</td>
+                        <td className="px-3 py-2">{row.employeeIdNumber}</td>
+                        <td className="px-3 py-2">{row.fullName}</td>
+                        <td className="px-3 py-2">{row.employmentStatus}</td>
+                        <td className="px-3 py-2">{row.plannedCourse}</td>
+                        <td className="px-3 py-2 tabular-nums">
+                          {formatCurrency(row.amount, row.currency)}
+                        </td>
+                        <td className="px-3 py-2">{row.currency}</td>
+                        <td className="px-3 py-2 tabular-nums">{row.plannedCourseStartDate}</td>
+                        <td className="px-3 py-2 text-amber-800">
+                          {row.isPotentialDuplicate
+                            ? row.duplicateReasons.join('; ') || 'Potential duplicate'
+                            : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           ) : null}
@@ -558,6 +650,9 @@ function BudgetsImportModal({
           {groupedImportErrors.length > 0 ? (
             <div className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4">
               <p className="text-sm font-medium text-red-900">Import validation failed</p>
+              <p className="mt-1 text-sm text-red-800">
+                No allocations from this attempt were saved. Correct the file or retry.
+              </p>
               <ul className="mt-3 space-y-2 text-sm text-red-800">
                 {groupedImportErrors.map((error) => (
                   <li key={error}>{error}</li>
@@ -577,14 +672,6 @@ function historyTypeLabel(entry: BudgetHistoryEntry) {
   }
   if (entry.type === 'reallocation_in') return 'Reallocation in';
   return 'Reallocation out';
-}
-
-function formatPreviewTotals(totalsByCurrency: Record<string, number> | undefined) {
-  if (!totalsByCurrency) return '';
-  const parts = Object.entries(totalsByCurrency)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([currency, amount]) => formatCurrency(amount, currency));
-  return parts.length ? ` Totals: ${parts.join(' · ')}.` : '';
 }
 
 export default function BudgetsPage() {
@@ -643,10 +730,11 @@ export default function BudgetsPage() {
   const [isImporting, setIsImporting] = useState(false);
   const [isDragActive, setIsDragActive] = useState(false);
   const [importErrors, setImportErrors] = useState<string[]>([]);
-  const [budgetPreviewText, setBudgetPreviewText] = useState<string | null>(null);
-  const [previewPotentialDuplicates, setPreviewPotentialDuplicates] = useState(0);
+  const [importPreview, setImportPreview] = useState<BudgetImportPreviewState | null>(null);
+  const [importSuccessDetail, setImportSuccessDetail] = useState<string | null>(null);
   const [templateDownloadToastOpen, setTemplateDownloadToastOpen] = useState(false);
   const [importSuccessToastOpen, setImportSuccessToastOpen] = useState(false);
+  const importAttemptIdRef = useRef<string | null>(null);
 
   const budgetImportFileRef = useRef<File | null>(null);
   const budgetImportInputRef = useRef<HTMLInputElement | null>(null);
@@ -817,9 +905,9 @@ export default function BudgetsPage() {
   const resetImportState = () => {
     setPendingBudgetImport(null);
     setStagedBudgetFileName(null);
-    setBudgetPreviewText(null);
-    setPreviewPotentialDuplicates(0);
+    setImportPreview(null);
     setImportErrors([]);
+    importAttemptIdRef.current = null;
     budgetImportFileRef.current = null;
   };
 
@@ -865,8 +953,8 @@ export default function BudgetsPage() {
   const processImportFile = async (file: File) => {
     setStagedBudgetFileName(file.name);
     setPendingBudgetImport(null);
-    setBudgetPreviewText(null);
-    setPreviewPotentialDuplicates(0);
+    setImportPreview(null);
+    importAttemptIdRef.current = null;
     setImportErrors([]);
     setIsValidatingImport(true);
 
@@ -906,8 +994,9 @@ export default function BudgetsPage() {
   const handleImportBudgets = async () => {
     if (!pendingBudgetImport || !orgId) return;
 
-    if (!budgetPreviewText) {
+    if (!importPreview) {
       setIsValidatingImport(true);
+      setImportErrors([]);
       try {
         const res = await fetch('/api/budgets/import', {
           method: 'POST',
@@ -922,8 +1011,11 @@ export default function BudgetsPage() {
           error?: string;
           errors?: string[];
           total?: number;
+          valid?: number;
+          invalid?: number;
           potentialDuplicates?: number;
           totalsByCurrency?: Record<string, number>;
+          previewRows?: BudgetImportPreviewRow[];
         } | null;
 
         if (!res.ok) {
@@ -931,19 +1023,31 @@ export default function BudgetsPage() {
             ? groupImportValidationErrors(payload.errors)
             : [payload?.error || 'Preview failed.'];
           setImportErrors(apiErrors);
+          if (payload?.previewRows?.length) {
+            setImportPreview({
+              total: payload.total ?? pendingBudgetImport.records.length,
+              valid: payload.valid ?? 0,
+              invalid: payload.invalid ?? apiErrors.length,
+              potentialDuplicates: payload.potentialDuplicates ?? 0,
+              totalsByCurrency: payload.totalsByCurrency ?? { AFN: 0, USD: 0, EUR: 0 },
+              previewRows: payload.previewRows,
+              importId: crypto.randomUUID(),
+            });
+          }
           return;
         }
 
-        const duplicates = payload?.potentialDuplicates ?? 0;
-        setPreviewPotentialDuplicates(duplicates);
-        const total = payload?.total ?? pendingBudgetImport.records.length;
-        const duplicateNote =
-          duplicates > 0
-            ? ` ${duplicates} potential duplicate${duplicates === 1 ? '' : 's'} — confirm to import anyway.`
-            : '';
-        setBudgetPreviewText(
-          `${total} budget row${total === 1 ? '' : 's'} ready.${duplicateNote}${formatPreviewTotals(payload?.totalsByCurrency)}`
-        );
+        const importId = crypto.randomUUID();
+        importAttemptIdRef.current = importId;
+        setImportPreview({
+          total: payload?.total ?? pendingBudgetImport.records.length,
+          valid: payload?.valid ?? pendingBudgetImport.records.length,
+          invalid: payload?.invalid ?? 0,
+          potentialDuplicates: payload?.potentialDuplicates ?? 0,
+          totalsByCurrency: payload?.totalsByCurrency ?? { AFN: 0, USD: 0, EUR: 0 },
+          previewRows: payload?.previewRows ?? [],
+          importId,
+        });
       } catch (error) {
         console.error('Budget import preview failed:', error);
         setImportErrors(['Preview failed. Please try again.']);
@@ -953,8 +1057,13 @@ export default function BudgetsPage() {
       return;
     }
 
+    if (isImporting) return;
+
     setIsImporting(true);
     setImportErrors([]);
+    const importId = importAttemptIdRef.current ?? importPreview.importId;
+    importAttemptIdRef.current = importId;
+
     try {
       const res = await fetch('/api/budgets/import', {
         method: 'POST',
@@ -962,23 +1071,57 @@ export default function BudgetsPage() {
         body: JSON.stringify({
           orgId,
           records: pendingBudgetImport.records,
-          allowPotentialDuplicates: previewPotentialDuplicates > 0,
+          importId,
+          allowPotentialDuplicates: importPreview.potentialDuplicates > 0,
         }),
       });
       const payload = (await res.json().catch(() => null)) as {
         error?: string;
         errors?: string[];
         imported?: number;
+        created?: Array<{ rowNumber: number; budgetCode: string }>;
+        needsDuplicateConfirmation?: boolean;
+        potentialDuplicates?: number;
+        totalsByCurrency?: Record<string, number>;
+        previewRows?: BudgetImportPreviewRow[];
       } | null;
 
       if (!res.ok) {
+        if (res.status === 409 && payload?.needsDuplicateConfirmation) {
+          setImportPreview((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  potentialDuplicates:
+                    payload.potentialDuplicates ?? prev.potentialDuplicates,
+                  totalsByCurrency: payload.totalsByCurrency ?? prev.totalsByCurrency,
+                  previewRows: payload.previewRows ?? prev.previewRows,
+                }
+              : prev
+          );
+        }
         const apiErrors = payload?.errors?.length
           ? groupImportValidationErrors(payload.errors)
-          : [payload?.error || 'Import failed.'];
+          : [
+              payload?.error ||
+                'Import failed. No allocations from this attempt were saved.',
+            ];
         setImportErrors(apiErrors);
         return;
       }
 
+      const imported = payload?.imported ?? 0;
+      const createdSample = (payload?.created ?? [])
+        .slice(0, 5)
+        .map((c) => `Row ${c.rowNumber} → ${c.budgetCode}`)
+        .join('; ');
+      setImportSuccessDetail(
+        imported > 0
+          ? `Imported ${imported} budget${imported === 1 ? '' : 's'}.${
+              createdSample ? ` ${createdSample}` : ''
+            }`
+          : 'Import completed.'
+      );
       setIsImportModalOpen(false);
       resetImportState();
       await reloadBudgets();
@@ -988,12 +1131,15 @@ export default function BudgetsPage() {
       }
       importSuccessToastTimerRef.current = setTimeout(() => {
         setImportSuccessToastOpen(false);
+        setImportSuccessDetail(null);
         importSuccessToastTimerRef.current = null;
       }, IMPORT_SUCCESS_TOAST_MS);
     } catch (error) {
       console.error('Budget import failed:', error);
       setImportErrors([
-        error instanceof Error ? error.message : 'Import failed while saving budget data.',
+        error instanceof Error
+          ? `${error.message}. No allocations from this attempt were saved.`
+          : 'Import failed while saving budget data. No allocations from this attempt were saved.',
       ]);
     } finally {
       setIsImporting(false);
@@ -1284,7 +1430,7 @@ export default function BudgetsPage() {
           aria-live="polite"
         >
           <p className="flex-1 pt-0.5 text-sm font-medium text-emerald-900">
-            Import completed successfully.
+            {importSuccessDetail || 'Import completed successfully.'}
           </p>
           <button
             type="button"
@@ -1613,7 +1759,7 @@ export default function BudgetsPage() {
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
-        budgetPreview={budgetPreviewText}
+        importPreview={importPreview}
       />
 
       <Modal

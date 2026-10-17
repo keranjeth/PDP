@@ -195,7 +195,19 @@ export function parseImportDate(value: unknown): ParsedImportDate {
   if (isBlankDateCell(value)) return { ok: false, blank: true };
 
   if (value instanceof Date) {
-    const iso = dateToCalendarIso(value);
+    // Excel/OOXML date-only cells are often UTC midnight. Using local getters in
+    // Asia/Kabul (and similar zones) shifts those back one calendar day.
+    const iso =
+      value.getUTCHours() === 0 &&
+      value.getUTCMinutes() === 0 &&
+      value.getUTCSeconds() === 0 &&
+      value.getUTCMilliseconds() === 0
+        ? calendarDateToIso(
+            value.getUTCFullYear(),
+            value.getUTCMonth() + 1,
+            value.getUTCDate()
+          )
+        : dateToCalendarIso(value);
     return iso ? acceptIso(iso) : { ok: false, message: 'Date is not a real calendar date.' };
   }
 

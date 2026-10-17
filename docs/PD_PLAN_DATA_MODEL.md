@@ -49,7 +49,7 @@ Tables: `employee_budgets` (employee FK only; no duplicated org attributes), `bu
 
 IDs: `BGT-YYYY-NNN`, `ADJ-YYYY-NNN`, `TRF-YYYY-NNN` (creation year; never rewritten when course date changes).
 
-Calculations (derived): Current = Initial + Increases − Decreases + Transfers In − Transfers Out; Remaining = Current − Actual Training Cost (0 until Training Records).
+Calculations (derived): Current = Initial + Increases − Decreases + Transfers In − Transfers Out; Remaining = Current − Actual Training Cost via `employee_budget_actual_training_cost` (**still returns 0** until Training Records tables exist and link costs to `employee_budgets.id`).
 
 | Field | Source |
 |---|---|

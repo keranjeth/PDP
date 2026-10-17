@@ -1,13 +1,12 @@
 import * as XLSX from 'xlsx';
-import {
-  dateToCalendarIso,
-  formatDateForExcelTemplate,
-  parseImportDate,
-} from './employee-dates';
+import { parseImportDate } from './employee-dates';
 import { BUDGET_CURRENCIES, type BudgetCurrency } from './budgets/types';
 
 export const BUDGET_TEMPLATE_SHEET_NAME = 'Budget Data';
 export const BUDGET_TEMPLATE_FILE_NAME = 'Budget-Data.xlsx';
+
+/** Unambiguous sample marker — never matches a real employee ID. */
+export const BUDGET_IMPORT_SAMPLE_EMPLOYEE_ID = '__PDP_SAMPLE__';
 
 export type BudgetImportRecord = {
   employeeIdNumber: string;
@@ -17,6 +16,19 @@ export type BudgetImportRecord = {
   currency: BudgetCurrency;
   plannedCourseStartDate: string; // YYYY-MM-DD
   rowNumber: number;
+};
+
+export type BudgetImportPreviewRow = {
+  rowNumber: number;
+  employeeIdNumber: string;
+  fullName: string;
+  employmentStatus: 'Active' | 'Inactive';
+  plannedCourse: string;
+  amount: number;
+  currency: string;
+  plannedCourseStartDate: string;
+  isPotentialDuplicate: boolean;
+  duplicateReasons: string[];
 };
 
 export type BudgetImportValidationResult =
@@ -42,8 +54,8 @@ const HEADERS = [
 ] as const;
 
 const SAMPLE_RECORD: BudgetImportRecord = {
-  employeeIdNumber: '265046',
-  fullName: 'Abdul Basir Halim',
+  employeeIdNumber: BUDGET_IMPORT_SAMPLE_EMPLOYEE_ID,
+  fullName: 'Sample Employee — Do Not Import',
   plannedCourse: 'Advanced Excel',
   amount: 2000,
   currency: 'AFN',
@@ -70,15 +82,15 @@ function headerIndexMap(headerRow: unknown[]) {
   return map;
 }
 
-function isSampleRow(record: BudgetImportRecord) {
-  return (
-    record.employeeIdNumber === SAMPLE_RECORD.employeeIdNumber &&
-    record.fullName === SAMPLE_RECORD.fullName &&
-    record.plannedCourse === SAMPLE_RECORD.plannedCourse &&
-    record.amount === SAMPLE_RECORD.amount &&
-    record.currency === SAMPLE_RECORD.currency &&
-    record.plannedCourseStartDate === SAMPLE_RECORD.plannedCourseStartDate
-  );
+/** Detect sample by marker ID (case/whitespace insensitive). */
+export function isBudgetImportSampleRow(record: {
+  employeeIdNumber?: string;
+  fullName?: string;
+}) {
+  const id = normalizeString(record.employeeIdNumber).toLowerCase();
+  if (id === BUDGET_IMPORT_SAMPLE_EMPLOYEE_ID.toLowerCase()) return true;
+  const name = normalizeString(record.fullName).toLowerCase();
+  return name.includes('do not import') && id.startsWith('__pdp_sample');
 }
 
 function parseAmount(value: unknown): number | null {
@@ -181,19 +193,15 @@ export function downloadBudgetImportTemplate() {
     const thin = { style: 'thin' as const, color: { argb: PRIMARY_ARGB } };
 
     const headers = [...HEADERS];
+    // Store the sample date as a plain YYYY-MM-DD string so Asia/Kabul (and UTC)
+    // round-trips never shift the calendar day.
     const sample = [
       SAMPLE_RECORD.employeeIdNumber,
       SAMPLE_RECORD.fullName,
       SAMPLE_RECORD.plannedCourse,
       SAMPLE_RECORD.amount,
       SAMPLE_RECORD.currency,
-      formatDateForExcelTemplate(
-        new Date(
-          Number(SAMPLE_RECORD.plannedCourseStartDate.slice(0, 4)),
-          Number(SAMPLE_RECORD.plannedCourseStartDate.slice(5, 7)) - 1,
-          Number(SAMPLE_RECORD.plannedCourseStartDate.slice(8, 10))
-        )
-      ),
+      SAMPLE_RECORD.plannedCourseStartDate,
     ];
 
     ws.addRow(headers);
@@ -223,16 +231,12 @@ export function downloadBudgetImportTemplate() {
       }
     }
 
-    // Budget amount column
     ws.getColumn(4).numFmt = '#,##0.00';
-    // Date column
-    ws.getColumn(6).numFmt = 'yyyy-mm-dd';
+    // Date column as text (calendar date, no timezone conversion).
+    ws.getColumn(6).numFmt = '@';
     const dateCell = ws.getRow(2).getCell(6);
-    if (typeof dateCell.value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateCell.value)) {
-      const [y, m, d] = dateCell.value.split('-').map(Number);
-      dateCell.value = new Date(y, m - 1, d);
-      dateCell.numFmt = 'yyyy-mm-dd';
-    }
+    dateCell.value = SAMPLE_RECORD.plannedCourseStartDate;
+    dateCell.numFmt = '@';
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (ws as any).dataValidations.add('E2:E5000', {
@@ -262,7 +266,7 @@ export function downloadBudgetImportTemplate() {
         const text = v == null ? '' : typeof v === 'number' ? String(v) : String(v);
         maxLen = Math.max(maxLen, text.length);
       });
-      ws.getColumn(col).width = Math.min(Math.max(maxLen + 2.5, 12), 40);
+      ws.getColumn(col).width = Math.min(Math.max(maxLen + 2.5, 12), 42);
     }
 
     const buf = await workbook.xlsx.writeBuffer();
@@ -317,11 +321,12 @@ export async function validateBudgetImportFile(
     };
   }
 
+  // Keep blank rows so worksheet row numbers stay accurate.
   const rows = XLSX.utils.sheet_to_json<(string | number | Date | null)[]>(worksheet, {
     header: 1,
     raw: true,
     defval: '',
-    blankrows: false,
+    blankrows: true,
   });
 
   if (rows.length === 0) {
@@ -349,7 +354,7 @@ export async function validateBudgetImportFile(
   let skippedSampleRow = false;
 
   rows.slice(1).forEach((row, index) => {
-    const rowNumber = index + 2;
+    const rowNumber = index + 2; // Excel row (header is row 1)
     const isEmpty = HEADERS.every((header) => {
       const columnIndex = headerMap.get(header.toLowerCase());
       return columnIndex === undefined || isBlankCell(row[columnIndex]);
@@ -363,7 +368,7 @@ export async function validateBudgetImportFile(
     }
     if (!parsed.record) return;
 
-    if (isSampleRow(parsed.record)) {
+    if (isBudgetImportSampleRow(parsed.record)) {
       skippedSampleRow = true;
       return;
     }
@@ -412,10 +417,20 @@ export function budgetDuplicateKey(parts: {
   ].join('|');
 }
 
-export function dateToCalendarIsoSafe(value: Date | string | null | undefined) {
-  if (!value) return null;
-  if (typeof value === 'string') {
-    return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
-  }
-  return dateToCalendarIso(value);
+/** Canonical payload string used for import idempotency fingerprints. */
+export function budgetImportCanonicalPayload(records: BudgetImportRecord[]): string {
+  return [...records]
+    .sort((a, b) => a.rowNumber - b.rowNumber || a.employeeIdNumber.localeCompare(b.employeeIdNumber))
+    .map((r) =>
+      [
+        r.rowNumber,
+        r.employeeIdNumber.trim().toLowerCase(),
+        normalizePersonName(r.fullName),
+        r.plannedCourse.trim().toLowerCase().replace(/\s+/g, ' '),
+        Number(r.amount).toFixed(4),
+        r.currency.toUpperCase(),
+        r.plannedCourseStartDate.slice(0, 10),
+      ].join('\t')
+    )
+    .join('\n');
 }
