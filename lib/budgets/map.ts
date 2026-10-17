@@ -17,6 +17,7 @@ type EmployeeLite = {
   id: string;
   id_number: string;
   full_name: string;
+  employment_status?: string | null;
   region: string | null;
   duty_station: string | null;
   job_location: string | null;
@@ -34,12 +35,15 @@ export function mapBudgetListItem(
   row: BudgetListRow,
   employee: EmployeeLite | undefined
 ): BudgetListItem {
+  const status = String(employee?.employment_status ?? '');
   return {
     id: row.id,
     budgetCode: row.budget_code,
     employeeId: row.employee_id,
     employeeIdNumber: employee?.id_number ?? '',
     fullName: employee?.full_name ?? '',
+    employmentStatus:
+      status === 'active' ? 'Active' : status === 'inactive' ? 'Inactive' : '',
     region: employee?.region ?? '',
     dutyStation: employee?.duty_station ?? '',
     jobLocation: employee?.job_location ?? '',

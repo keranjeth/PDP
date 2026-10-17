@@ -8,6 +8,7 @@ export type BudgetListItem = {
   employeeId: string;
   employeeIdNumber: string;
   fullName: string;
+  employmentStatus: 'Active' | 'Inactive' | '';
   region: string;
   dutyStation: string;
   jobLocation: string;

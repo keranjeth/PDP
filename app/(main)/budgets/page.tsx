@@ -1,5 +1,6 @@
 'use client';
 
+import type { ChangeEvent, DragEvent } from 'react';
 import {
   useDeferredValue,
   useEffect,
@@ -14,6 +15,8 @@ import { useAppAuth } from '@/components/providers/AppProviders';
 import { Button } from '@/components/ui/Button';
 import { CompactDataTable } from '@/components/ui/compact-employee-table';
 import { DatePicker } from '@/components/ui/DatePicker';
+import { HeaderDivider } from '@/components/ui/HeaderDivider';
+import { ImportModalShell } from '@/components/ui/ImportModalShell';
 import { Input } from '@/components/ui/Input';
 import { Label } from '@/components/ui/Label';
 import { Modal } from '@/components/ui/Modal';
@@ -25,6 +28,17 @@ import {
   SelectValue,
 } from '@/components/ui/Select';
 import { PlusGlyph, TableSearchInput } from '@/components/ui/table-controls';
+import {
+  downloadBudgetImportTemplate,
+  validateBudgetImportFile,
+  type BudgetImportRecord,
+} from '@/lib/budget-import';
+import {
+  BUDGET_DATE_RANGE_OPTIONS,
+  isoInInclusiveRange,
+  resolveBudgetDateRange,
+  type BudgetDateRangePreset,
+} from '@/lib/budget-date-range';
 import {
   BUDGET_CURRENCIES,
   type AdjustBudgetRequest,
@@ -39,6 +53,7 @@ import {
 import { dateToCalendarIso } from '@/lib/employee-dates';
 import { hydrateEmployeesFromSupabase } from '@/lib/employee-remote-sync';
 import { formatCurrency } from '@/lib/format-currency';
+import { groupImportValidationErrors } from '@/lib/import-error-utils';
 import { employeeStore } from '@/lib/store';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import type { Employee } from '@/lib/types';
@@ -53,25 +68,35 @@ type ActiveModal =
   | { kind: 'reallocate'; budget: BudgetListItem }
   | { kind: 'history'; budget: BudgetListItem };
 
+type BudgetEmploymentTab = 'active' | 'separated' | 'all';
+
+type PendingBudgetImport = {
+  fileName: string;
+  records: BudgetImportRecord[];
+  skippedSampleRow: boolean;
+};
+
+type CurrencyTotals = {
+  original: number;
+  current: number;
+  remaining: number;
+};
+
 const BUDGET_COLUMNS: Array<{ key: string; label: string; align?: 'left' | 'right' }> = [
   { key: 'budgetCode', label: 'Budget ID' },
   { key: 'employeeIdNumber', label: 'Employee ID' },
   { key: 'fullName', label: 'Full Name' },
-  { key: 'region', label: 'Region' },
-  { key: 'dutyStation', label: 'Duty Station' },
-  { key: 'jobLocation', label: 'Job Location' },
-  { key: 'department', label: 'Department' },
-  { key: 'unit', label: 'Unit' },
-  { key: 'positionTitle', label: 'Position Title' },
   { key: 'plannedCourse', label: 'Planned Course' },
-  { key: 'initialAmount', label: 'Initial', align: 'right' },
-  { key: 'currentAmount', label: 'Current', align: 'right' },
-  { key: 'remainingAmount', label: 'Remaining', align: 'right' },
+  { key: 'initialAmount', label: 'Budget', align: 'right' },
   { key: 'currency', label: 'Currency' },
+  { key: 'currentAmount', label: 'Current Budget', align: 'right' },
+  { key: 'remainingAmount', label: 'Remaining Budget', align: 'right' },
   { key: 'plannedCourseStartDate', label: 'Planned Start' },
 ];
 
 const ALL_FILTER = '__all__';
+const TEMPLATE_DOWNLOAD_TOAST_MS = 4000;
+const IMPORT_SUCCESS_TOAST_MS = 30000;
 
 function useIsClientMounted() {
   return useSyncExternalStore(
@@ -89,6 +114,13 @@ function useEmployeesSnapshot() {
   );
 }
 
+function getInitials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0] ?? ''}${parts[parts.length - 1][0] ?? ''}`.toUpperCase();
+}
+
 function calendarIsoToDate(iso: string): Date | undefined {
   const [y, m, d] = iso.split('-').map(Number);
   if (!y || !m || !d) return undefined;
@@ -103,11 +135,6 @@ function formatDisplayDate(iso: string) {
     month: 'short',
     day: 'numeric',
   });
-}
-
-function planningYearFromIso(iso: string): number | null {
-  const y = Number(iso.slice(0, 4));
-  return Number.isFinite(y) ? y : null;
 }
 
 async function readApiError(response: Response): Promise<string> {
@@ -321,12 +348,243 @@ function FilterSelect({
   );
 }
 
+function BudgetSummaryCard({
+  title,
+  totalsByCurrency,
+  pick,
+}: {
+  title: string;
+  totalsByCurrency: Map<string, CurrencyTotals>;
+  pick: keyof CurrencyTotals;
+}) {
+  const currencies = [...totalsByCurrency.keys()].sort((a, b) => a.localeCompare(b));
+
+  return (
+    <div className="group relative overflow-hidden rounded-[14px] border border-slate-200/90 bg-white px-4 py-3 shadow-sm">
+      <div className="absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-[var(--analytics-budget)] via-[var(--analytics-budget-hover)] to-[var(--analytics-budget-soft)]" />
+      <p className="text-[15px] font-semibold text-slate-800">{title}</p>
+      <div className="mt-2 space-y-1">
+        {currencies.length === 0 ? (
+          <p className="text-[20px] font-semibold text-slate-700">—</p>
+        ) : (
+          currencies.map((currency) => (
+            <p key={currency} className="text-[18px] font-semibold tabular-nums text-slate-700">
+              {formatCurrency(totalsByCurrency.get(currency)![pick], currency)}
+            </p>
+          ))
+        )}
+      </div>
+      {currencies.length > 1 ? (
+        <p className="mt-2 text-[12px] text-slate-500">Totals by currency (filtered view)</p>
+      ) : (
+        <p className="mt-2 text-[12px] text-slate-500">Filtered budgets</p>
+      )}
+    </div>
+  );
+}
+
+function ImportSelectedFileRow({
+  fileName,
+  onRemove,
+  removeDisabled,
+}: {
+  fileName: string;
+  onRemove: () => void;
+  removeDisabled: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
+          <UploadIcon className="h-4 w-4" />
+        </div>
+        <span className="truncate text-sm font-medium text-slate-900" title={fileName}>
+          {fileName}
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={onRemove}
+        disabled={removeDisabled}
+        className="shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 disabled:pointer-events-none disabled:opacity-40"
+      >
+        Remove
+      </button>
+    </div>
+  );
+}
+
+function BudgetsImportModal({
+  isOpen,
+  onClose,
+  onDownloadTemplate,
+  onPickFile,
+  onImport,
+  pendingImport,
+  isValidatingImport,
+  isImporting,
+  isDragActive,
+  onDragEnter,
+  onDragLeave,
+  onDragOver,
+  onDrop,
+  stagedFileName,
+  groupedImportErrors,
+  onClearFile,
+  budgetPreview,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onDownloadTemplate: () => void;
+  onPickFile: () => void;
+  onImport: () => void;
+  pendingImport: PendingBudgetImport | null;
+  stagedFileName: string | null;
+  groupedImportErrors: string[];
+  onClearFile: () => void;
+  isValidatingImport: boolean;
+  isImporting: boolean;
+  isDragActive: boolean;
+  onDragEnter: (event: DragEvent<HTMLDivElement>) => void;
+  onDragLeave: (event: DragEvent<HTMLDivElement>) => void;
+  onDragOver: (event: DragEvent<HTMLDivElement>) => void;
+  onDrop: (event: DragEvent<HTMLDivElement>) => void;
+  budgetPreview: string | null;
+}) {
+  const budgetFileName = pendingImport?.fileName ?? stagedFileName ?? null;
+  const showLargeDropZone = !budgetFileName;
+  const removeDisabled = isValidatingImport || isImporting;
+
+  return (
+    <ImportModalShell
+      isOpen={isOpen}
+      title="Import budgets"
+      icon={<UploadIcon className="h-6 w-6" />}
+      onClose={onClose}
+    >
+      {isImporting ? (
+        <div className="space-y-8">
+          <div className="flex items-center justify-center">
+            <div className="relative flex h-24 w-24 items-center justify-center rounded-full bg-[var(--primary-light)]">
+              <div className="absolute inset-0 animate-pulse rounded-full border border-[var(--primary-border)]" />
+              <div className="h-14 w-14 animate-spin rounded-full border-4 border-[var(--primary)] border-t-transparent" />
+            </div>
+          </div>
+          <div className="text-center">
+            <p className="text-[22px] font-semibold text-slate-950">Importing budgets</p>
+            <p className="mt-2 text-[15px] text-slate-500">Creating budget allocations from your file…</p>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-6">
+          <p className="text-center text-[15px] font-semibold text-slate-800">
+            <button
+              type="button"
+              onClick={onDownloadTemplate}
+              className="font-semibold text-[var(--primary)] underline-offset-4 hover:text-[var(--primary-hover)] hover:underline"
+            >
+              Download budget template
+            </button>
+            <span className="font-semibold text-slate-800"> → fill in data → upload here.</span>
+          </p>
+
+          {showLargeDropZone ? (
+            <div
+              className={`rounded-[18px] border-2 border-dashed px-5 py-10 text-center transition-colors sm:px-8 sm:py-12 ${
+                isDragActive ? 'border-[var(--primary)] bg-[var(--primary-light)]' : 'border-slate-200 bg-white'
+              }`}
+              onDragEnter={onDragEnter}
+              onDragLeave={onDragLeave}
+              onDragOver={onDragOver}
+              onDrop={onDrop}
+            >
+              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                <UploadIcon className="h-8 w-8" />
+              </div>
+              <h4 className="mt-7 text-[18px] font-semibold text-slate-950">Upload XLSX File</h4>
+              <p className="mt-3 text-[15px] text-slate-500">
+                Drag and drop your file here, or click to browse
+              </p>
+              <div className="mt-7">
+                <Button
+                  type="button"
+                  className="w-full !rounded-xl !bg-[var(--primary)] px-6 py-3 !text-[15px] font-semibold hover:!bg-[var(--primary-hover)] sm:min-w-[160px] sm:w-auto"
+                  onClick={onPickFile}
+                  disabled={isValidatingImport}
+                >
+                  {isValidatingImport ? 'Validating…' : 'Choose File'}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          {budgetFileName ? (
+            <ImportSelectedFileRow
+              fileName={budgetFileName}
+              onRemove={onClearFile}
+              removeDisabled={removeDisabled}
+            />
+          ) : null}
+
+          {pendingImport ? (
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-sm font-medium text-emerald-900">Ready to import</p>
+                  <p className="mt-1 text-sm text-emerald-800">
+                    {pendingImport.records.length} budget rows validated successfully.
+                  </p>
+                  {pendingImport.skippedSampleRow ? (
+                    <p className="mt-2 text-sm text-emerald-700">
+                      The sample template row was detected and ignored.
+                    </p>
+                  ) : null}
+                  {budgetPreview ? (
+                    <p className="mt-2 text-sm text-emerald-900">{budgetPreview}</p>
+                  ) : null}
+                </div>
+                <Button
+                  type="button"
+                  className="w-full !rounded-xl !bg-[var(--primary)] px-5 py-2.5 !text-sm font-semibold hover:!bg-[var(--primary-hover)] sm:w-auto"
+                  onClick={onImport}
+                  disabled={isValidatingImport}
+                >
+                  {budgetPreview ? 'Confirm Import' : 'Review Import'}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          {groupedImportErrors.length > 0 ? (
+            <div className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4">
+              <p className="text-sm font-medium text-red-900">Import validation failed</p>
+              <ul className="mt-3 space-y-2 text-sm text-red-800">
+                {groupedImportErrors.map((error) => (
+                  <li key={error}>{error}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </ImportModalShell>
+  );
+}
+
 function historyTypeLabel(entry: BudgetHistoryEntry) {
   if (entry.type === 'adjustment') {
     return entry.direction === 'decrease' ? 'Decrease' : 'Increase';
   }
   if (entry.type === 'reallocation_in') return 'Reallocation in';
   return 'Reallocation out';
+}
+
+function formatPreviewTotals(totalsByCurrency: Record<string, number> | undefined) {
+  if (!totalsByCurrency) return '';
+  const parts = Object.entries(totalsByCurrency)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([currency, amount]) => formatCurrency(amount, currency));
+  return parts.length ? ` Totals: ${parts.join(' · ')}.` : '';
 }
 
 export default function BudgetsPage() {
@@ -343,10 +601,13 @@ export default function BudgetsPage() {
   const [listError, setListError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const deferredSearch = useDeferredValue(searchTerm);
+  const [budgetTab, setBudgetTab] = useState<BudgetEmploymentTab>('all');
   const [filterRegion, setFilterRegion] = useState('');
   const [filterDepartment, setFilterDepartment] = useState('');
   const [filterCurrency, setFilterCurrency] = useState('');
-  const [filterYear, setFilterYear] = useState('');
+  const [dateRangePreset, setDateRangePreset] = useState<BudgetDateRangePreset>('ytd');
+  const [customRangeFrom, setCustomRangeFrom] = useState('');
+  const [customRangeTo, setCustomRangeTo] = useState('');
 
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
   const [activeModal, setActiveModal] = useState<ActiveModal | null>(null);
@@ -375,15 +636,34 @@ export default function BudgetsPage() {
   const [historyEntries, setHistoryEntries] = useState<BudgetHistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
-  const activeEmployees = useMemo(
-    () => employees.filter((e) => e.employmentStatus === 'Active'),
-    [employees]
-  );
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [pendingBudgetImport, setPendingBudgetImport] = useState<PendingBudgetImport | null>(null);
+  const [stagedBudgetFileName, setStagedBudgetFileName] = useState<string | null>(null);
+  const [isValidatingImport, setIsValidatingImport] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [isDragActive, setIsDragActive] = useState(false);
+  const [importErrors, setImportErrors] = useState<string[]>([]);
+  const [budgetPreviewText, setBudgetPreviewText] = useState<string | null>(null);
+  const [previewPotentialDuplicates, setPreviewPotentialDuplicates] = useState(0);
+  const [templateDownloadToastOpen, setTemplateDownloadToastOpen] = useState(false);
+  const [importSuccessToastOpen, setImportSuccessToastOpen] = useState(false);
+
+  const budgetImportFileRef = useRef<File | null>(null);
+  const budgetImportInputRef = useRef<HTMLInputElement | null>(null);
+  const templateDownloadToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const importSuccessToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const selectedNewEmployee = useMemo(
-    () => activeEmployees.find((e) => e.id === newEmployeeId) ?? null,
-    [activeEmployees, newEmployeeId]
+    () => employees.find((e) => e.id === newEmployeeId) ?? null,
+    [employees, newEmployeeId]
   );
+
+  const resolvedDateRange = useMemo(
+    () => resolveBudgetDateRange(dateRangePreset, customRangeFrom, customRangeTo),
+    [dateRangePreset, customRangeFrom, customRangeTo]
+  );
+
+  const dateRangeError = 'error' in resolvedDateRange ? resolvedDateRange.error : null;
 
   const reloadBudgets = async () => {
     if (!orgId) return;
@@ -425,7 +705,7 @@ export default function BudgetsPage() {
     if (!supabase || !orgId) return;
     void (async () => {
       try {
-        if (employeeStore.getActiveEmployees().length === 0) {
+        if (employeeStore.getEmployees().length === 0) {
           await hydrateEmployeesFromSupabase(supabase, orgId);
         }
       } catch (err) {
@@ -434,7 +714,6 @@ export default function BudgetsPage() {
           .from('employees')
           .select('*')
           .eq('org_id', orgId)
-          .eq('employment_status', 'active')
           .is('deleted_at', null);
         if (!error && data?.length) {
           const { fetchEmployeesFromSupabase } = await import('@/lib/supabase/employee-db');
@@ -445,46 +724,62 @@ export default function BudgetsPage() {
     })();
   }, [supabase, orgId]);
 
+  useEffect(() => {
+    return () => {
+      if (templateDownloadToastTimerRef.current !== null) {
+        clearTimeout(templateDownloadToastTimerRef.current);
+      }
+      if (importSuccessToastTimerRef.current !== null) {
+        clearTimeout(importSuccessToastTimerRef.current);
+      }
+    };
+  }, []);
+
   const filterOptions = useMemo(() => {
     const regions = new Set<string>();
     const departments = new Set<string>();
     const currencies = new Set<string>();
-    const years = new Set<number>();
     for (const row of budgets) {
       if (row.region) regions.add(row.region);
       if (row.department) departments.add(row.department);
       if (row.currency) currencies.add(row.currency);
-      const year = planningYearFromIso(row.plannedCourseStartDate);
-      if (year) years.add(year);
     }
     return {
       regions: [...regions].sort((a, b) => a.localeCompare(b)),
       departments: [...departments].sort((a, b) => a.localeCompare(b)),
       currencies: [...currencies].sort((a, b) => a.localeCompare(b)),
-      years: [...years].sort((a, b) => b - a),
     };
   }, [budgets]);
 
   const filteredRows = useMemo(() => {
     const q = deferredSearch.trim().toLowerCase();
     return budgets.filter((row) => {
+      if (budgetTab === 'active' && row.employmentStatus !== 'Active') return false;
+      if (budgetTab === 'separated' && row.employmentStatus !== 'Inactive') return false;
+
       if (filterRegion && row.region !== filterRegion) return false;
       if (filterDepartment && row.department !== filterDepartment) return false;
       if (filterCurrency && row.currency !== filterCurrency) return false;
-      if (filterYear) {
-        const year = planningYearFromIso(row.plannedCourseStartDate);
-        if (String(year ?? '') !== filterYear) return false;
+
+      if (!dateRangeError && !('error' in resolvedDateRange)) {
+        if (
+          !isoInInclusiveRange(
+            row.plannedCourseStartDate,
+            resolvedDateRange.from,
+            resolvedDateRange.to
+          )
+        ) {
+          return false;
+        }
       }
+
       if (!q) return true;
       const haystack = [
         row.budgetCode,
         row.employeeIdNumber,
         row.fullName,
-        row.region,
-        row.department,
         row.plannedCourse,
         row.currency,
-        row.positionTitle,
       ]
         .join(' ')
         .toLowerCase();
@@ -493,11 +788,246 @@ export default function BudgetsPage() {
   }, [
     budgets,
     deferredSearch,
+    budgetTab,
     filterRegion,
     filterDepartment,
     filterCurrency,
-    filterYear,
+    dateRangeError,
+    resolvedDateRange,
   ]);
+
+  const summaryByCurrency = useMemo(() => {
+    const map = new Map<string, CurrencyTotals>();
+    for (const row of filteredRows) {
+      const currency = row.currency || 'AFN';
+      const entry = map.get(currency) ?? { original: 0, current: 0, remaining: 0 };
+      entry.original += row.initialAmount;
+      entry.current += row.currentAmount;
+      entry.remaining += row.remainingAmount;
+      map.set(currency, entry);
+    }
+    return map;
+  }, [filteredRows]);
+
+  const groupedImportErrors = useMemo(
+    () => groupImportValidationErrors(importErrors),
+    [importErrors]
+  );
+
+  const resetImportState = () => {
+    setPendingBudgetImport(null);
+    setStagedBudgetFileName(null);
+    setBudgetPreviewText(null);
+    setPreviewPotentialDuplicates(0);
+    setImportErrors([]);
+    budgetImportFileRef.current = null;
+  };
+
+  const openImportModal = () => {
+    resetImportState();
+    setIsImportModalOpen(true);
+  };
+
+  const closeImportModal = () => {
+    if (isImporting) return;
+    setIsImportModalOpen(false);
+    resetImportState();
+  };
+
+  const dismissTemplateDownloadToast = () => {
+    setTemplateDownloadToastOpen(false);
+    if (templateDownloadToastTimerRef.current !== null) {
+      clearTimeout(templateDownloadToastTimerRef.current);
+      templateDownloadToastTimerRef.current = null;
+    }
+  };
+
+  const dismissImportSuccessToast = () => {
+    setImportSuccessToastOpen(false);
+    if (importSuccessToastTimerRef.current !== null) {
+      clearTimeout(importSuccessToastTimerRef.current);
+      importSuccessToastTimerRef.current = null;
+    }
+  };
+
+  const handleTemplateDownload = () => {
+    downloadBudgetImportTemplate();
+    setTemplateDownloadToastOpen(true);
+    if (templateDownloadToastTimerRef.current !== null) {
+      clearTimeout(templateDownloadToastTimerRef.current);
+    }
+    templateDownloadToastTimerRef.current = setTimeout(() => {
+      setTemplateDownloadToastOpen(false);
+      templateDownloadToastTimerRef.current = null;
+    }, TEMPLATE_DOWNLOAD_TOAST_MS);
+  };
+
+  const processImportFile = async (file: File) => {
+    setStagedBudgetFileName(file.name);
+    setPendingBudgetImport(null);
+    setBudgetPreviewText(null);
+    setPreviewPotentialDuplicates(0);
+    setImportErrors([]);
+    setIsValidatingImport(true);
+
+    try {
+      budgetImportFileRef.current = file;
+      const result = await validateBudgetImportFile(file);
+
+      if (!result.ok) {
+        setImportErrors(groupImportValidationErrors(result.errors));
+        return;
+      }
+
+      setStagedBudgetFileName(null);
+      setPendingBudgetImport({
+        fileName: result.fileName,
+        records: result.records,
+        skippedSampleRow: result.skippedSampleRow,
+      });
+    } catch (error) {
+      console.error('Error validating budget import file:', error);
+      setImportErrors([
+        'The import file could not be read. Download a fresh template and try again.',
+      ]);
+    } finally {
+      setIsValidatingImport(false);
+    }
+  };
+
+  const handleFileSelection = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      await processImportFile(file);
+    }
+    event.target.value = '';
+  };
+
+  const handleImportBudgets = async () => {
+    if (!pendingBudgetImport || !orgId) return;
+
+    if (!budgetPreviewText) {
+      setIsValidatingImport(true);
+      try {
+        const res = await fetch('/api/budgets/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orgId,
+            records: pendingBudgetImport.records,
+            preview: true,
+          }),
+        });
+        const payload = (await res.json().catch(() => null)) as {
+          error?: string;
+          errors?: string[];
+          total?: number;
+          potentialDuplicates?: number;
+          totalsByCurrency?: Record<string, number>;
+        } | null;
+
+        if (!res.ok) {
+          const apiErrors = payload?.errors?.length
+            ? groupImportValidationErrors(payload.errors)
+            : [payload?.error || 'Preview failed.'];
+          setImportErrors(apiErrors);
+          return;
+        }
+
+        const duplicates = payload?.potentialDuplicates ?? 0;
+        setPreviewPotentialDuplicates(duplicates);
+        const total = payload?.total ?? pendingBudgetImport.records.length;
+        const duplicateNote =
+          duplicates > 0
+            ? ` ${duplicates} potential duplicate${duplicates === 1 ? '' : 's'} — confirm to import anyway.`
+            : '';
+        setBudgetPreviewText(
+          `${total} budget row${total === 1 ? '' : 's'} ready.${duplicateNote}${formatPreviewTotals(payload?.totalsByCurrency)}`
+        );
+      } catch (error) {
+        console.error('Budget import preview failed:', error);
+        setImportErrors(['Preview failed. Please try again.']);
+      } finally {
+        setIsValidatingImport(false);
+      }
+      return;
+    }
+
+    setIsImporting(true);
+    setImportErrors([]);
+    try {
+      const res = await fetch('/api/budgets/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orgId,
+          records: pendingBudgetImport.records,
+          allowPotentialDuplicates: previewPotentialDuplicates > 0,
+        }),
+      });
+      const payload = (await res.json().catch(() => null)) as {
+        error?: string;
+        errors?: string[];
+        imported?: number;
+      } | null;
+
+      if (!res.ok) {
+        const apiErrors = payload?.errors?.length
+          ? groupImportValidationErrors(payload.errors)
+          : [payload?.error || 'Import failed.'];
+        setImportErrors(apiErrors);
+        return;
+      }
+
+      setIsImportModalOpen(false);
+      resetImportState();
+      await reloadBudgets();
+      setImportSuccessToastOpen(true);
+      if (importSuccessToastTimerRef.current !== null) {
+        clearTimeout(importSuccessToastTimerRef.current);
+      }
+      importSuccessToastTimerRef.current = setTimeout(() => {
+        setImportSuccessToastOpen(false);
+        importSuccessToastTimerRef.current = null;
+      }, IMPORT_SUCCESS_TOAST_MS);
+    } catch (error) {
+      console.error('Budget import failed:', error);
+      setImportErrors([
+        error instanceof Error ? error.message : 'Import failed while saving budget data.',
+      ]);
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const handleDragEnter = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!isImporting) setIsDragActive(true);
+  };
+
+  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const handleDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const relatedTarget = event.relatedTarget as Node | null;
+    if (!event.currentTarget.contains(relatedTarget)) {
+      setIsDragActive(false);
+    }
+  };
+
+  const handleDrop = async (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragActive(false);
+    if (isImporting) return;
+    const file = event.dataTransfer.files?.[0];
+    if (file) await processImportFile(file);
+  };
 
   const resetNewForm = () => {
     setNewEmployeeId('');
@@ -572,7 +1102,7 @@ export default function BudgetsPage() {
 
   const submitNewBudget = async () => {
     if (!orgId || !selectedNewEmployee) {
-      setModalError('Select an active employee.');
+      setModalError('Select an employee.');
       return;
     }
     const amount = parseAmount(newAmount);
@@ -716,18 +1246,109 @@ export default function BudgetsPage() {
 
   if (isReady && !canReadBudgets) {
     return (
-      <div className="mx-auto max-w-5xl rounded-[18px] border border-slate-200/90 bg-white p-4 shadow-sm sm:p-6">
-        <h2 className="text-lg font-semibold text-slate-900">Budgets</h2>
-        <p className="mt-2 text-sm text-slate-600">You do not have permission to view budgets.</p>
+      <div className="space-y-4 bg-slate-50 p-4 sm:p-6">
+        <div className="mx-auto max-w-5xl rounded-[18px] border border-slate-200/90 bg-white p-4 shadow-sm sm:p-6">
+          <h2 className="text-lg font-semibold text-slate-900">Budgets</h2>
+          <p className="mt-2 text-sm text-slate-600">You do not have permission to view budgets.</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto max-w-7xl">
+    <div className="space-y-4 bg-slate-50 p-4 sm:p-6">
+      {templateDownloadToastOpen ? (
+        <div
+          className="fixed top-20 left-4 right-4 z-[200] flex items-start gap-3 rounded-lg border border-emerald-200/80 bg-white py-3 pl-4 pr-2 shadow-lg shadow-slate-900/10 ring-1 ring-slate-900/5 sm:left-auto sm:right-4 sm:max-w-sm"
+          role="status"
+          aria-live="polite"
+        >
+          <p className="flex-1 pt-0.5 text-sm font-medium text-emerald-900">
+            Template downloaded successfully.
+          </p>
+          <button
+            type="button"
+            onClick={dismissTemplateDownloadToast}
+            className="shrink-0 rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
+            aria-label="Dismiss notification"
+          >
+            <CloseIcon className="h-4 w-4" />
+          </button>
+        </div>
+      ) : null}
+
+      {importSuccessToastOpen ? (
+        <div
+          className="fixed bottom-4 left-4 right-4 z-[200] flex items-start gap-3 rounded-lg border border-emerald-200/80 bg-white py-3 pl-4 pr-2 shadow-lg shadow-slate-900/10 ring-1 ring-slate-900/5 sm:right-auto sm:max-w-sm"
+          role="status"
+          aria-live="polite"
+        >
+          <p className="flex-1 pt-0.5 text-sm font-medium text-emerald-900">
+            Import completed successfully.
+          </p>
+          <button
+            type="button"
+            onClick={dismissImportSuccessToast}
+            className="shrink-0 rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
+            aria-label="Dismiss notification"
+          >
+            <CloseIcon className="h-4 w-4" />
+          </button>
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <BudgetSummaryCard title="Original Budget" totalsByCurrency={summaryByCurrency} pick="original" />
+        <BudgetSummaryCard title="Current Budget" totalsByCurrency={summaryByCurrency} pick="current" />
+        <BudgetSummaryCard
+          title="Remaining Budget"
+          totalsByCurrency={summaryByCurrency}
+          pick="remaining"
+        />
+      </div>
+
+      <div>
+        <div className="flex gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <button
+            type="button"
+            onClick={() => setBudgetTab('active')}
+            className={`relative px-3 py-2 text-sm font-semibold transition-colors ${
+              budgetTab === 'active'
+                ? 'text-[var(--analytics-budget)] after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-[var(--analytics-budget)]'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            Active
+          </button>
+          <button
+            type="button"
+            onClick={() => setBudgetTab('separated')}
+            className={`relative px-3 py-2 text-sm font-semibold transition-colors ${
+              budgetTab === 'separated'
+                ? 'text-[var(--analytics-budget)] after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-[var(--analytics-budget)]'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            Separated
+          </button>
+          <button
+            type="button"
+            onClick={() => setBudgetTab('all')}
+            className={`relative px-3 py-2 text-sm font-semibold transition-colors ${
+              budgetTab === 'all'
+                ? 'text-[var(--analytics-budget)] after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-[var(--analytics-budget)]'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            All Budgets
+          </button>
+        </div>
+        <HeaderDivider />
+      </div>
+
       <CompactDataTable<BudgetTableRow>
         title="Budgets"
-        description="Manage employee training budget allocations and planned courses."
+        description="Manage employee training budgets and planned development activities."
         rows={filteredRows}
         emptyMessage={loading ? 'Loading budgets…' : 'No budget records match your filters.'}
         isLoading={loading}
@@ -749,41 +1370,94 @@ export default function BudgetsPage() {
         mobileSummary={{
           title: (row) => row.budgetCode,
           subtitle: (row) => row.fullName,
-          avatarChar: (row) => row.fullName.trim().charAt(0).toUpperCase() || '?',
+          avatarChar: (row) => getInitials(row.fullName),
         }}
         mobileExcludeFromGrid={['budgetCode', 'fullName']}
         actions={
           <>
             {canCreateBudgets ? (
-              <button
-                type="button"
-                onClick={openNewModal}
-                disabled={!orgId}
-                className="inline-flex h-9 items-center gap-2 rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)] disabled:opacity-60"
-              >
-                <PlusGlyph className="h-4 w-4" />
-                New Budget
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={openImportModal}
+                  disabled={!orgId}
+                  className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)] disabled:opacity-60"
+                >
+                  <UploadIcon className="h-4 w-4" />
+                  Import
+                </button>
+                <button
+                  type="button"
+                  onClick={openNewModal}
+                  disabled={!orgId}
+                  className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)] disabled:opacity-60"
+                >
+                  <PlusGlyph className="h-4 w-4" />
+                  New Budget
+                </button>
+              </>
             ) : null}
-            <button
-              type="button"
-              onClick={() => void reloadBudgets()}
-              disabled={loading || !orgId}
-              className="inline-flex h-9 items-center gap-2 rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)] disabled:opacity-60"
-            >
-              {loading ? 'Refreshing…' : 'Refresh'}
-            </button>
           </>
         }
         toolbar={
-          <div className="flex w-full flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <TableSearchInput
-              id="budget-search"
-              value={searchTerm}
-              onChange={setSearchTerm}
-              placeholder="Search budgets…"
-            />
-            <div className="flex flex-wrap items-center gap-2">
+          <TableSearchInput
+            id="budget-search"
+            value={searchTerm}
+            onChange={setSearchTerm}
+            placeholder="Search budgets…"
+          />
+        }
+        betweenHeaderAndTable={
+          <div className="space-y-2 px-4 pb-4 sm:px-6">
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="min-w-[10rem]">
+                <Label htmlFor="budget-date-range" className="sr-only">
+                  Date range
+                </Label>
+                <Select
+                  value={dateRangePreset}
+                  onValueChange={(v) => setDateRangePreset(v as BudgetDateRangePreset)}
+                >
+                  <SelectTrigger id="budget-date-range" className="h-9 text-sm">
+                    <SelectValue placeholder="Date range" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {BUDGET_DATE_RANGE_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {dateRangePreset === 'custom' ? (
+                <>
+                  <div className="min-w-[9rem]">
+                    <Label htmlFor="budget-custom-from" className="text-xs text-slate-600">
+                      From
+                    </Label>
+                    <Input
+                      id="budget-custom-from"
+                      type="date"
+                      value={customRangeFrom}
+                      onChange={(e) => setCustomRangeFrom(e.target.value)}
+                      className="mt-1 h-9 text-sm"
+                    />
+                  </div>
+                  <div className="min-w-[9rem]">
+                    <Label htmlFor="budget-custom-to" className="text-xs text-slate-600">
+                      To
+                    </Label>
+                    <Input
+                      id="budget-custom-to"
+                      type="date"
+                      value={customRangeTo}
+                      onChange={(e) => setCustomRangeTo(e.target.value)}
+                      className="mt-1 h-9 text-sm"
+                    />
+                  </div>
+                </>
+              ) : null}
               <FilterSelect
                 id="budget-filter-region"
                 label="regions"
@@ -805,20 +1479,26 @@ export default function BudgetsPage() {
                 onChange={setFilterCurrency}
                 options={filterOptions.currencies.map((c) => ({ value: c, label: c }))}
               />
-              <FilterSelect
-                id="budget-filter-year"
-                label="years"
-                value={filterYear}
-                onChange={setFilterYear}
-                options={filterOptions.years.map((y) => ({
-                  value: String(y),
-                  label: String(y),
-                }))}
-              />
             </div>
+            {dateRangeError ? (
+              <p className="text-sm text-amber-800">{dateRangeError}</p>
+            ) : null}
           </div>
         }
         renderCell={(row, key) => {
+          if (key === 'fullName') {
+            return (
+              <div className="flex min-w-0 items-center gap-2">
+                <span
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--primary-light)] text-[11px] font-semibold text-[var(--primary)]"
+                  aria-hidden
+                >
+                  {getInitials(row.fullName)}
+                </span>
+                <span className="truncate text-[13px] text-slate-900">{row.fullName || '—'}</span>
+              </div>
+            );
+          }
           if (key === 'initialAmount' || key === 'currentAmount' || key === 'remainingAmount') {
             const amount = row[key as 'initialAmount' | 'currentAmount' | 'remainingAmount'];
             return (
@@ -853,7 +1533,7 @@ export default function BudgetsPage() {
                   openEditModal(row);
                 }}
               >
-                Edit
+                Edit Budget
               </button>
             ) : null}
             {canUpdateBudgets ? (
@@ -866,7 +1546,7 @@ export default function BudgetsPage() {
                   openAdjustModal(row);
                 }}
               >
-                Adjust
+                Adjust Budget
               </button>
             ) : null}
             {canUpdateBudgets ? (
@@ -879,7 +1559,7 @@ export default function BudgetsPage() {
                   openReallocateModal(row);
                 }}
               >
-                Reallocate
+                Reallocate Budget
               </button>
             ) : null}
             {canReadBudgets ? (
@@ -892,7 +1572,7 @@ export default function BudgetsPage() {
                   openHistoryModal(row);
                 }}
               >
-                History
+                Budget History
               </button>
             ) : null}
           </RowActionsMenu>
@@ -900,16 +1580,47 @@ export default function BudgetsPage() {
       />
 
       {listError ? (
-        <p className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           {listError}
         </p>
       ) : null}
+
+      <input
+        ref={budgetImportInputRef}
+        type="file"
+        accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        className="hidden"
+        onChange={handleFileSelection}
+      />
+
+      <BudgetsImportModal
+        isOpen={isImportModalOpen}
+        onClose={closeImportModal}
+        onDownloadTemplate={handleTemplateDownload}
+        onPickFile={() => budgetImportInputRef.current?.click()}
+        onImport={() => void handleImportBudgets()}
+        pendingImport={pendingBudgetImport}
+        stagedFileName={stagedBudgetFileName}
+        groupedImportErrors={groupedImportErrors}
+        onClearFile={() => {
+          if (isValidatingImport || isImporting) return;
+          resetImportState();
+        }}
+        isValidatingImport={isValidatingImport}
+        isImporting={isImporting}
+        isDragActive={isDragActive}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+        budgetPreview={budgetPreviewText}
+      />
 
       <Modal
         isOpen={activeModal?.kind === 'new'}
         onClose={closeModal}
         title="New budget"
-        subtitle="Allocate training budget for an active employee."
+        subtitle="Allocate training budget for an employee."
         size="lg"
         footer={
           <>
@@ -927,17 +1638,18 @@ export default function BudgetsPage() {
         ) : null}
         <div className="space-y-4">
           <div>
-            <Label htmlFor="new-budget-employee">Active employee</Label>
+            <Label htmlFor="new-budget-employee">Employee</Label>
             <Select value={newEmployeeId || undefined} onValueChange={setNewEmployeeId}>
               <SelectTrigger id="new-budget-employee" className="mt-1">
                 <SelectValue placeholder="Select employee…" />
               </SelectTrigger>
               <SelectContent>
-                {[...activeEmployees]
+                {[...employees]
                   .sort((a, b) => a.fullName.localeCompare(b.fullName))
                   .map((employee) => (
                     <SelectItem key={employee.id} value={employee.id}>
                       {employee.idNumber} — {employee.fullName}
+                      {employee.employmentStatus === 'Inactive' ? ' (Separated)' : ''}
                     </SelectItem>
                   ))}
               </SelectContent>
@@ -1263,5 +1975,31 @@ export default function BudgetsPage() {
         )}
       </Modal>
     </div>
+  );
+}
+
+function UploadIcon({ className }: { className: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className={className}>
+      <path
+        d="M12 16V4m0 0-4 4m4-4 4 4M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function CloseIcon({ className }: { className: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className={className}>
+      <path
+        d="M6 6l12 12M18 6 6 18"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }

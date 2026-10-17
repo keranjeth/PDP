@@ -47,6 +47,7 @@ export async function GET(request: Request) {
       id: string;
       id_number: string;
       full_name: string;
+      employment_status: string | null;
       region: string | null;
       duty_station: string | null;
       job_location: string | null;
@@ -60,7 +61,7 @@ export async function GET(request: Request) {
     const { data: employees, error: empErr } = await access.sessionClient
       .from('employees')
       .select(
-        'id,id_number,full_name,region,duty_station,job_location,department,unit,designation'
+        'id,id_number,full_name,employment_status,region,duty_station,job_location,department,unit,designation'
       )
       .eq('org_id', orgId)
       .in('id', employeeIds);
