@@ -108,6 +108,7 @@ const BUDGET_COLUMNS: Array<{ key: string; label: string; align?: 'left' | 'righ
 const ALL_FILTER = '__all__';
 const TEMPLATE_DOWNLOAD_TOAST_MS = 4000;
 const IMPORT_SUCCESS_TOAST_MS = 30000;
+const EMPTY_EMPLOYEES: Employee[] = [];
 
 function useIsClientMounted() {
   return useSyncExternalStore(
@@ -121,7 +122,7 @@ function useEmployeesSnapshot() {
   return useSyncExternalStore(
     (listener) => employeeStore.subscribe(listener),
     () => employeeStore.getEmployees(),
-    () => [] as Employee[]
+    () => EMPTY_EMPLOYEES
   );
 }
 
