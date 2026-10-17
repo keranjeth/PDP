@@ -356,10 +356,14 @@ export async function POST(request: Request) {
   });
 
   if (error) {
+    // RPC runs in one transaction: a returned error means the attempt was rolled back.
     return NextResponse.json(
       {
-        error: `${error.message}. No allocations from this import attempt were saved.`,
+        error: 'Import failed. No allocations were saved.',
+        detail: error.message,
+        outcome: 'rolled_back' as const,
         imported: 0,
+        importId,
       },
       { status: 400 }
     );
@@ -373,7 +377,12 @@ export async function POST(request: Request) {
     potentialDuplicates?: number;
     totalsByCurrency?: Record<string, number>;
     previewRows?: BudgetImportPreviewRow[];
-    created?: Array<{ rowNumber: number; budgetId: string; budgetCode: string }>;
+    created?: Array<{
+      rowNumber: number;
+      budgetId: string;
+      budgetCode: string;
+      employeeIdNumber?: string;
+    }>;
     errors?: string[];
   };
 
@@ -381,27 +390,39 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error:
-          'Potential duplicate allocations were found. Review the preview and confirm to import them anyway. No allocations from this attempt were saved.',
+          'Potential duplicate allocations were found. Review the preview and confirm to import them anyway.',
+        outcome: 'rolled_back' as const,
         needsDuplicateConfirmation: true,
         potentialDuplicates: result.potentialDuplicates ?? potentialDuplicates,
         totalsByCurrency: result.totalsByCurrency ?? totalsByCurrency(preview.rows),
         previewRows: result.previewRows ?? preview.rows,
         errors: result.errors ?? [],
         imported: 0,
+        importId,
       },
       { status: 409 }
     );
   }
 
+  const created = (result?.created ?? []).map((row) => ({
+    rowNumber: row.rowNumber,
+    budgetId: row.budgetId,
+    budgetCode: row.budgetCode,
+    employeeIdNumber:
+      row.employeeIdNumber ??
+      preview.rows.find((p) => p.rowNumber === row.rowNumber)?.employeeIdNumber ??
+      '',
+  }));
+
   return NextResponse.json({
     ok: true,
-    imported: result?.imported ?? 0,
+    outcome: 'completed' as const,
+    imported: result?.imported ?? created.length,
     total: result?.total ?? cleaned.length,
     potentialDuplicates: result?.potentialDuplicates ?? 0,
     totalsByCurrency: result?.totalsByCurrency ?? totalsByCurrency(preview.rows),
-    created: result?.created ?? [],
+    created,
     previewRows: result?.previewRows ?? preview.rows,
     importId,
-    idempotentReplay: false,
   });
 }

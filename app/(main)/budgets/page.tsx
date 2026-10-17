@@ -87,6 +87,43 @@ type BudgetImportPreviewState = {
   importId: string;
 };
 
+type BudgetImportCreatedRow = {
+  rowNumber: number;
+  employeeIdNumber: string;
+  budgetId: string;
+  budgetCode: string;
+};
+
+type BudgetImportResultsState = {
+  imported: number;
+  importId: string;
+  created: BudgetImportCreatedRow[];
+};
+
+type ImportConfirmFailureKind = 'rolled_back' | 'uncertain';
+
+type BudgetImportConfirmPayload = {
+  error?: string;
+  detail?: string;
+  errors?: string[];
+  outcome?: 'rolled_back' | 'completed' | 'uncertain';
+  imported?: number;
+  created?: Array<{
+    rowNumber: number;
+    budgetCode: string;
+    budgetId: string;
+    employeeIdNumber?: string;
+  }>;
+  needsDuplicateConfirmation?: boolean;
+  potentialDuplicates?: number;
+  totalsByCurrency?: Record<string, number>;
+  previewRows?: BudgetImportPreviewRow[];
+};
+
+const IMPORT_ROLLED_BACK_MESSAGE = 'Import failed. No allocations were saved.';
+const IMPORT_UNCERTAIN_MESSAGE =
+  'Unable to confirm the result. Retry safely to check this import.';
+
 type CurrencyTotals = {
   original: number;
   current: number;
@@ -107,8 +144,28 @@ const BUDGET_COLUMNS: Array<{ key: string; label: string; align?: 'left' | 'righ
 
 const ALL_FILTER = '__all__';
 const TEMPLATE_DOWNLOAD_TOAST_MS = 4000;
-const IMPORT_SUCCESS_TOAST_MS = 30000;
 const EMPTY_EMPLOYEES: Employee[] = [];
+
+function downloadBudgetImportResultsCsv(results: BudgetImportResultsState) {
+  const header = ['Worksheet Row', 'Employee ID', 'Budget ID'];
+  const lines = [
+    header.join(','),
+    ...results.created.map((row) =>
+      [row.rowNumber, row.employeeIdNumber, row.budgetCode || row.budgetId]
+        .map((value) => `"${String(value).replace(/"/g, '""')}"`)
+        .join(',')
+    ),
+  ];
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `Budget-Import-Results-${results.importId.slice(0, 8)}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
 
 function useIsClientMounted() {
   return useSyncExternalStore(
@@ -444,6 +501,7 @@ function BudgetsImportModal({
   groupedImportErrors,
   onClearFile,
   importPreview,
+  confirmFailureKind,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -462,6 +520,7 @@ function BudgetsImportModal({
   onDragOver: (event: DragEvent<HTMLDivElement>) => void;
   onDrop: (event: DragEvent<HTMLDivElement>) => void;
   importPreview: BudgetImportPreviewState | null;
+  confirmFailureKind: ImportConfirmFailureKind | null;
 }) {
   const budgetFileName = pendingImport?.fileName ?? stagedFileName ?? null;
   const showLargeDropZone = !budgetFileName;
@@ -648,17 +707,41 @@ function BudgetsImportModal({
             </div>
           ) : null}
 
-          {groupedImportErrors.length > 0 ? (
+          {groupedImportErrors.length > 0 || confirmFailureKind ? (
             <div className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4">
-              <p className="text-sm font-medium text-red-900">Import validation failed</p>
-              <p className="mt-1 text-sm text-red-800">
-                No allocations from this attempt were saved. Correct the file or retry.
+              <p className="text-sm font-medium text-red-900">
+                {confirmFailureKind === 'uncertain'
+                  ? 'Import result uncertain'
+                  : confirmFailureKind === 'rolled_back'
+                    ? 'Import failed'
+                    : 'Import validation failed'}
               </p>
-              <ul className="mt-3 space-y-2 text-sm text-red-800">
-                {groupedImportErrors.map((error) => (
-                  <li key={error}>{error}</li>
-                ))}
-              </ul>
+              <p className="mt-1 text-sm text-red-800">
+                {confirmFailureKind === 'uncertain'
+                  ? IMPORT_UNCERTAIN_MESSAGE
+                  : confirmFailureKind === 'rolled_back'
+                    ? IMPORT_ROLLED_BACK_MESSAGE
+                    : 'Correct the file and upload again. No allocations were saved for invalid rows.'}
+              </p>
+              {groupedImportErrors.length > 0 ? (
+                <ul className="mt-3 space-y-2 text-sm text-red-800">
+                  {groupedImportErrors.map((error) => (
+                    <li key={error}>{error}</li>
+                  ))}
+                </ul>
+              ) : null}
+              {confirmFailureKind === 'uncertain' && importPreview ? (
+                <div className="mt-4">
+                  <Button
+                    type="button"
+                    className="!rounded-xl !bg-[var(--primary)] px-5 py-2.5 !text-sm font-semibold hover:!bg-[var(--primary-hover)]"
+                    onClick={onImport}
+                    disabled={isImporting}
+                  >
+                    {isImporting ? 'Retrying…' : 'Retry safely'}
+                  </Button>
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -732,15 +815,16 @@ export default function BudgetsPage() {
   const [isDragActive, setIsDragActive] = useState(false);
   const [importErrors, setImportErrors] = useState<string[]>([]);
   const [importPreview, setImportPreview] = useState<BudgetImportPreviewState | null>(null);
-  const [importSuccessDetail, setImportSuccessDetail] = useState<string | null>(null);
+  const [importResults, setImportResults] = useState<BudgetImportResultsState | null>(null);
+  const [confirmFailureKind, setConfirmFailureKind] = useState<ImportConfirmFailureKind | null>(
+    null
+  );
   const [templateDownloadToastOpen, setTemplateDownloadToastOpen] = useState(false);
-  const [importSuccessToastOpen, setImportSuccessToastOpen] = useState(false);
   const importAttemptIdRef = useRef<string | null>(null);
 
   const budgetImportFileRef = useRef<File | null>(null);
   const budgetImportInputRef = useRef<HTMLInputElement | null>(null);
   const templateDownloadToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const importSuccessToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const selectedNewEmployee = useMemo(
     () => employees.find((e) => e.id === newEmployeeId) ?? null,
@@ -817,9 +901,6 @@ export default function BudgetsPage() {
     return () => {
       if (templateDownloadToastTimerRef.current !== null) {
         clearTimeout(templateDownloadToastTimerRef.current);
-      }
-      if (importSuccessToastTimerRef.current !== null) {
-        clearTimeout(importSuccessToastTimerRef.current);
       }
     };
   }, []);
@@ -903,23 +984,32 @@ export default function BudgetsPage() {
     [importErrors]
   );
 
-  const resetImportState = () => {
+  const resetImportState = (options?: { clearImportId?: boolean }) => {
     setPendingBudgetImport(null);
     setStagedBudgetFileName(null);
     setImportPreview(null);
     setImportErrors([]);
-    importAttemptIdRef.current = null;
+    setConfirmFailureKind(null);
     budgetImportFileRef.current = null;
+    if (options?.clearImportId !== false) {
+      importAttemptIdRef.current = null;
+    }
   };
 
   const openImportModal = () => {
-    resetImportState();
+    // Keep uncertain imports (same import ID) available for a safe retry.
+    if (!(confirmFailureKind === 'uncertain' && pendingBudgetImport && importPreview)) {
+      resetImportState();
+    }
     setIsImportModalOpen(true);
   };
 
   const closeImportModal = () => {
     if (isImporting) return;
     setIsImportModalOpen(false);
+    if (confirmFailureKind === 'uncertain' && pendingBudgetImport && importPreview) {
+      return;
+    }
     resetImportState();
   };
 
@@ -931,12 +1021,8 @@ export default function BudgetsPage() {
     }
   };
 
-  const dismissImportSuccessToast = () => {
-    setImportSuccessToastOpen(false);
-    if (importSuccessToastTimerRef.current !== null) {
-      clearTimeout(importSuccessToastTimerRef.current);
-      importSuccessToastTimerRef.current = null;
-    }
+  const dismissImportResults = () => {
+    setImportResults(null);
   };
 
   const handleTemplateDownload = () => {
@@ -955,8 +1041,10 @@ export default function BudgetsPage() {
     setStagedBudgetFileName(file.name);
     setPendingBudgetImport(null);
     setImportPreview(null);
+    setConfirmFailureKind(null);
     importAttemptIdRef.current = null;
     setImportErrors([]);
+    setIsImporting(false);
     setIsValidatingImport(true);
 
     try {
@@ -998,6 +1086,7 @@ export default function BudgetsPage() {
     if (!importPreview) {
       setIsValidatingImport(true);
       setImportErrors([]);
+      setConfirmFailureKind(null);
       try {
         const res = await fetch('/api/budgets/import', {
           method: 'POST',
@@ -1025,6 +1114,8 @@ export default function BudgetsPage() {
             : [payload?.error || 'Preview failed.'];
           setImportErrors(apiErrors);
           if (payload?.previewRows?.length) {
+            const importId = importAttemptIdRef.current ?? crypto.randomUUID();
+            importAttemptIdRef.current = importId;
             setImportPreview({
               total: payload.total ?? pendingBudgetImport.records.length,
               valid: payload.valid ?? 0,
@@ -1032,13 +1123,13 @@ export default function BudgetsPage() {
               potentialDuplicates: payload.potentialDuplicates ?? 0,
               totalsByCurrency: payload.totalsByCurrency ?? { AFN: 0, USD: 0, EUR: 0 },
               previewRows: payload.previewRows,
-              importId: crypto.randomUUID(),
+              importId,
             });
           }
           return;
         }
 
-        const importId = crypto.randomUUID();
+        const importId = importAttemptIdRef.current ?? crypto.randomUUID();
         importAttemptIdRef.current = importId;
         setImportPreview({
           total: payload?.total ?? pendingBudgetImport.records.length,
@@ -1062,33 +1153,45 @@ export default function BudgetsPage() {
 
     setIsImporting(true);
     setImportErrors([]);
+    setConfirmFailureKind(null);
     const importId = importAttemptIdRef.current ?? importPreview.importId;
     importAttemptIdRef.current = importId;
 
     try {
-      const res = await fetch('/api/budgets/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orgId,
-          records: pendingBudgetImport.records,
-          importId,
-          allowPotentialDuplicates: importPreview.potentialDuplicates > 0,
-        }),
-      });
-      const payload = (await res.json().catch(() => null)) as {
-        error?: string;
-        errors?: string[];
-        imported?: number;
-        created?: Array<{ rowNumber: number; budgetCode: string }>;
-        needsDuplicateConfirmation?: boolean;
-        potentialDuplicates?: number;
-        totalsByCurrency?: Record<string, number>;
-        previewRows?: BudgetImportPreviewRow[];
-      } | null;
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 120_000);
+
+      let res: Response;
+      try {
+        res = await fetch('/api/budgets/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            orgId,
+            records: pendingBudgetImport.records,
+            importId,
+            allowPotentialDuplicates: importPreview.potentialDuplicates > 0,
+          }),
+        });
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
+
+      let payload: BudgetImportConfirmPayload | null = null;
+
+      try {
+        payload = (await res.json()) as BudgetImportConfirmPayload;
+      } catch {
+        // Response body unreadable — treat as uncertain (may have committed).
+        setConfirmFailureKind('uncertain');
+        setImportErrors([]);
+        return;
+      }
 
       if (!res.ok) {
-        if (res.status === 409 && payload?.needsDuplicateConfirmation) {
+        if (res.status === 409 && payload.needsDuplicateConfirmation) {
+          setConfirmFailureKind('rolled_back');
           setImportPreview((prev) =>
             prev
               ? {
@@ -1100,48 +1203,54 @@ export default function BudgetsPage() {
                 }
               : prev
           );
+          const apiErrors = payload.errors?.length
+            ? groupImportValidationErrors(payload.errors)
+            : [payload.error || IMPORT_ROLLED_BACK_MESSAGE];
+          setImportErrors(apiErrors);
+          return;
         }
-        const apiErrors = payload?.errors?.length
+
+        // Gateway timeouts / opaque 5xx: result may already be committed.
+        if (res.status === 408 || res.status === 504 || res.status === 502) {
+          setConfirmFailureKind('uncertain');
+          setImportErrors([]);
+          return;
+        }
+
+        setConfirmFailureKind('rolled_back');
+        const apiErrors = payload.errors?.length
           ? groupImportValidationErrors(payload.errors)
-          : [
-              payload?.error ||
-                'Import failed. No allocations from this attempt were saved.',
-            ];
+          : payload.detail
+            ? [IMPORT_ROLLED_BACK_MESSAGE, payload.detail]
+            : [payload.error || IMPORT_ROLLED_BACK_MESSAGE];
         setImportErrors(apiErrors);
         return;
       }
 
-      const imported = payload?.imported ?? 0;
-      const createdSample = (payload?.created ?? [])
-        .slice(0, 5)
-        .map((c) => `Row ${c.rowNumber} → ${c.budgetCode}`)
-        .join('; ');
-      setImportSuccessDetail(
-        imported > 0
-          ? `Imported ${imported} budget${imported === 1 ? '' : 's'}.${
-              createdSample ? ` ${createdSample}` : ''
-            }`
-          : 'Import completed.'
-      );
+      const created: BudgetImportCreatedRow[] = (payload.created ?? []).map((row) => ({
+        rowNumber: row.rowNumber,
+        employeeIdNumber:
+          row.employeeIdNumber ||
+          importPreview.previewRows.find((p) => p.rowNumber === row.rowNumber)
+            ?.employeeIdNumber ||
+          '',
+        budgetId: row.budgetId,
+        budgetCode: row.budgetCode,
+      }));
+
+      setImportResults({
+        imported: payload.imported ?? created.length,
+        importId,
+        created,
+      });
       setIsImportModalOpen(false);
-      resetImportState();
+      resetImportState({ clearImportId: true });
       await reloadBudgets();
-      setImportSuccessToastOpen(true);
-      if (importSuccessToastTimerRef.current !== null) {
-        clearTimeout(importSuccessToastTimerRef.current);
-      }
-      importSuccessToastTimerRef.current = setTimeout(() => {
-        setImportSuccessToastOpen(false);
-        setImportSuccessDetail(null);
-        importSuccessToastTimerRef.current = null;
-      }, IMPORT_SUCCESS_TOAST_MS);
     } catch (error) {
       console.error('Budget import failed:', error);
-      setImportErrors([
-        error instanceof Error
-          ? `${error.message}. No allocations from this attempt were saved.`
-          : 'Import failed while saving budget data. No allocations from this attempt were saved.',
-      ]);
+      // Network / abort / timeout: do not claim rollback; keep import ID for safe retry.
+      setConfirmFailureKind('uncertain');
+      setImportErrors([]);
     } finally {
       setIsImporting(false);
     }
@@ -1424,23 +1533,57 @@ export default function BudgetsPage() {
         </div>
       ) : null}
 
-      {importSuccessToastOpen ? (
+      {importResults ? (
         <div
-          className="fixed bottom-4 left-4 right-4 z-[200] flex items-start gap-3 rounded-lg border border-emerald-200/80 bg-white py-3 pl-4 pr-2 shadow-lg shadow-slate-900/10 ring-1 ring-slate-900/5 sm:right-auto sm:max-w-sm"
+          className="rounded-[18px] border border-emerald-200/80 bg-white p-4 shadow-sm sm:p-5"
           role="status"
           aria-live="polite"
         >
-          <p className="flex-1 pt-0.5 text-sm font-medium text-emerald-900">
-            {importSuccessDetail || 'Import completed successfully.'}
-          </p>
-          <button
-            type="button"
-            onClick={dismissImportSuccessToast}
-            className="shrink-0 rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
-            aria-label="Dismiss notification"
-          >
-            <CloseIcon className="h-4 w-4" />
-          </button>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-emerald-900">Import completed</p>
+              <p className="mt-1 text-sm text-emerald-800">
+                Imported {importResults.imported} budget
+                {importResults.imported === 1 ? '' : 's'}. Results stay available until dismissed.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => downloadBudgetImportResultsCsv(importResults)}
+                className="inline-flex h-9 items-center rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)]"
+              >
+                Download Results
+              </button>
+              <button
+                type="button"
+                onClick={dismissImportResults}
+                className="inline-flex h-9 items-center rounded-xl border border-slate-200 px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+          <div className="mt-4 max-h-72 overflow-auto rounded-xl border border-emerald-100">
+            <table className="min-w-full text-left text-sm text-slate-800">
+              <thead className="sticky top-0 bg-emerald-50 text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-3 py-2">Worksheet Row</th>
+                  <th className="px-3 py-2">Employee ID</th>
+                  <th className="px-3 py-2">Budget ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {importResults.created.map((row) => (
+                  <tr key={`${row.rowNumber}-${row.budgetCode}`} className="border-t border-slate-100">
+                    <td className="px-3 py-2 tabular-nums">{row.rowNumber}</td>
+                    <td className="px-3 py-2">{row.employeeIdNumber}</td>
+                    <td className="px-3 py-2 font-medium">{row.budgetCode || row.budgetId}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       ) : null}
 
@@ -1761,6 +1904,7 @@ export default function BudgetsPage() {
         onDragOver={handleDragOver}
         onDrop={handleDrop}
         importPreview={importPreview}
+        confirmFailureKind={confirmFailureKind}
       />
 
       <Modal
