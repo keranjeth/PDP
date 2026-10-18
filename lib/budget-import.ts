@@ -10,6 +10,7 @@ export const BUDGET_IMPORT_SAMPLE_EMPLOYEE_ID = '__PDP_SAMPLE__';
 
 export type BudgetImportRecord = {
   employeeIdNumber: string;
+  /** Optional visual reference only — matching uses Employee ID. */
   fullName: string;
   plannedCourse: string;
   amount: number;
@@ -137,6 +138,29 @@ function normalizeString(value: unknown) {
   return String(value ?? '').trim();
 }
 
+/** Trim only — never coerce to number (keeps leading zeros). */
+export function normalizeEmployeeIdCell(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    // Excel may have already dropped leading zeros; avoid scientific notation.
+    return Number.isInteger(value) ? String(value) : String(value);
+  }
+  return String(value).trim();
+}
+
+/** Merge exclusion reports by worksheet row (later entries win). Never truncates. */
+export function mergeBudgetImportCheckRows(
+  ...groups: Array<BudgetImportCheckRow[] | undefined | null>
+): BudgetImportCheckRow[] {
+  const byRow = new Map<number, BudgetImportCheckRow>();
+  for (const group of groups) {
+    for (const row of group ?? []) {
+      byRow.set(row.rowNumber, row);
+    }
+  }
+  return [...byRow.values()].sort((a, b) => a.rowNumber - b.rowNumber);
+}
+
 function headerIndexMap(headerRow: unknown[]) {
   const map = new Map<string, number>();
   headerRow.forEach((cell, index) => {
@@ -185,7 +209,7 @@ function parseRow(
     return index === undefined ? '' : row[index];
   };
 
-  const employeeIdNumber = normalizeString(get('Employee ID'));
+  const employeeIdNumber = normalizeEmployeeIdCell(get('Employee ID'));
   const fullName = normalizeString(get('Full Name'));
   const plannedCourse = normalizeString(get('Planned Course'));
   const amountRaw = get('Budget');
@@ -195,7 +219,6 @@ function parseRow(
   const dateDisplay = formatDateCell(dateRaw);
 
   if (!employeeIdNumber) reasons.push('Employee ID is required.');
-  if (!fullName) reasons.push('Full Name is required.');
   if (!plannedCourse) reasons.push('Planned Course is required.');
 
   const amount = parseAmount(amountRaw);
@@ -306,6 +329,12 @@ export function downloadBudgetImportTemplate() {
         }
       }
     }
+
+    // Employee ID as text so leading zeros are preserved.
+    ws.getColumn(1).numFmt = '@';
+    const idCell = ws.getRow(2).getCell(1);
+    idCell.value = SAMPLE_RECORD.employeeIdNumber;
+    idCell.numFmt = '@';
 
     ws.getColumn(4).numFmt = '#,##0.00';
     // Date column as text (calendar date, no timezone conversion).

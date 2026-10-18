@@ -5,7 +5,7 @@ import {
   BUDGET_IMPORT_SAMPLE_EMPLOYEE_ID,
   budgetDuplicateKey,
   isBudgetImportSampleRow,
-  normalizePersonName,
+  normalizeEmployeeIdCell,
   type BudgetImportCheckRow,
   type BudgetImportPreviewRow,
   type BudgetImportRecord,
@@ -98,7 +98,7 @@ function softCleanRecords(rawRecords: BudgetImportRecord[]): SoftCleanResult {
 
   for (const raw of rawRecords) {
     const rowNumber = Number(raw.rowNumber) || cleaned.length + checkRows.length + 2;
-    const employeeIdNumber = String(raw.employeeIdNumber ?? '').trim();
+    const employeeIdNumber = normalizeEmployeeIdCell(raw.employeeIdNumber);
     const fullName = String(raw.fullName ?? '').trim();
     const plannedCourse = String(raw.plannedCourse ?? '').trim();
     const currency = String(raw.currency ?? '').trim().toUpperCase();
@@ -110,7 +110,6 @@ function softCleanRecords(rawRecords: BudgetImportRecord[]): SoftCleanResult {
       reasons.push('Sample template row cannot be imported.');
     }
     if (!employeeIdNumber) reasons.push('Employee ID is required.');
-    if (!fullName) reasons.push('Full Name is required.');
     if (!plannedCourse) reasons.push('Planned Course is required.');
     if (!Number.isFinite(amount) || amount < 0) {
       reasons.push('Budget must be a valid non-negative amount.');
@@ -176,6 +175,7 @@ async function buildPreview(
     }
   >();
 
+  // Exact ID match only (trimmed). No wildcards, no numeric coercion, no name fallback.
   for (let i = 0; i < idNumbers.length; i += 200) {
     const chunk = idNumbers.slice(i, i + 200);
     const { data, error } = await access.sessionClient
@@ -194,31 +194,7 @@ async function buildPreview(
         employment_status: string | null;
         deleted_at: string | null;
       };
-      employeeByIdNumber.set(String(emp.id_number).toLowerCase(), emp);
-    }
-  }
-
-  // Case-insensitive fallback for IDs not returned by exact .in() match.
-  for (const idNumber of idNumbers) {
-    if (employeeByIdNumber.has(idNumber.toLowerCase())) continue;
-    const { data } = await access.sessionClient
-      .from('employees')
-      .select('id,id_number,full_name,employment_status,deleted_at')
-      .eq('org_id', orgId)
-      .ilike('id_number', idNumber)
-      .is('deleted_at', null)
-      .limit(1)
-      .maybeSingle();
-    if (data) {
-      const emp = data as {
-        id: string;
-        id_number: string;
-        full_name: string;
-        employment_status: string | null;
-        deleted_at: string | null;
-      };
-      employeeByIdNumber.set(idNumber.toLowerCase(), emp);
-      employeeByIdNumber.set(String(emp.id_number).toLowerCase(), emp);
+      employeeByIdNumber.set(String(emp.id_number), emp);
     }
   }
 
@@ -286,7 +262,7 @@ async function buildPreview(
       continue;
     }
 
-    const emp = employeeByIdNumber.get(row.employeeIdNumber.toLowerCase());
+    const emp = employeeByIdNumber.get(row.employeeIdNumber);
     if (!emp || emp.deleted_at) {
       checkRows.push(checkRowFromPartial(base, 'Employee ID was not found.'));
       continue;
@@ -298,16 +274,6 @@ async function buildPreview(
         checkRowFromPartial(
           { ...base, masterName: emp.full_name },
           'Employee status must be Active or Inactive.'
-        )
-      );
-      continue;
-    }
-
-    if (normalizePersonName(emp.full_name) !== normalizePersonName(row.fullName)) {
-      checkRows.push(
-        checkRowFromPartial(
-          { ...base, masterName: emp.full_name },
-          'Full Name does not match the employee master.'
         )
       );
       continue;

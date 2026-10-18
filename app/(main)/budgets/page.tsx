@@ -31,6 +31,7 @@ import { PlusGlyph, TableSearchInput } from '@/components/ui/table-controls';
 import {
   downloadBudgetImportCheckCsv,
   downloadBudgetImportTemplate,
+  mergeBudgetImportCheckRows,
   validateBudgetImportFile,
   type BudgetImportCheckRow,
   type BudgetImportPreviewRow,
@@ -113,6 +114,7 @@ type BudgetImportConfirmPayload = {
   errors?: string[];
   outcome?: 'rolled_back' | 'completed' | 'uncertain';
   imported?: number;
+  excluded?: number;
   created?: Array<{
     rowNumber: number;
     budgetCode: string;
@@ -123,6 +125,7 @@ type BudgetImportConfirmPayload = {
   potentialDuplicates?: number;
   totalsByCurrency?: Record<string, number>;
   previewRows?: BudgetImportPreviewRow[];
+  checkRows?: BudgetImportCheckRow[];
 };
 
 const IMPORT_ROLLED_BACK_MESSAGE = 'Import failed. No allocations were saved.';
@@ -555,22 +558,29 @@ function BudgetsImportModal({
           <div className="text-center">
             <p className="text-[22px] font-semibold text-slate-950">Importing budgets</p>
             <p className="mt-2 text-[15px] text-slate-500">
-              Creating valid allocations in one secure transaction…
+              Matching employees by Employee ID and creating valid allocations in one secure
+              transaction…
             </p>
           </div>
         </div>
       ) : (
         <div className="space-y-6">
-          <p className="text-center text-[15px] font-semibold text-slate-800">
-            <button
-              type="button"
-              onClick={onDownloadTemplate}
-              className="font-semibold text-[var(--primary)] underline-offset-4 hover:text-[var(--primary-hover)] hover:underline"
-            >
-              Download budget template
-            </button>
-            <span className="font-semibold text-slate-800"> → fill in data → upload here.</span>
-          </p>
+          <div className="space-y-2 text-center">
+            <p className="text-[15px] font-semibold text-slate-800">
+              <button
+                type="button"
+                onClick={onDownloadTemplate}
+                className="font-semibold text-[var(--primary)] underline-offset-4 hover:text-[var(--primary-hover)] hover:underline"
+              >
+                Download budget template
+              </button>
+              <span className="font-semibold text-slate-800"> → fill in data → upload here.</span>
+            </p>
+            <p className="text-sm font-normal text-slate-600">
+              Employees are matched by Employee ID only. Full Name is optional and used for your
+              reference — the official system name is shown after validation.
+            </p>
+          </div>
 
           {showLargeDropZone ? (
             <div
@@ -614,7 +624,8 @@ function BudgetsImportModal({
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-5 py-4">
               <p className="text-sm font-medium text-slate-800">Validating file…</p>
               <p className="mt-1 text-sm text-slate-600">
-                Checking employee IDs and names against the employee master.
+                Matching Employee IDs to authorized employees. Uploaded names are for reference
+                only.
               </p>
             </div>
           ) : null}
@@ -1063,9 +1074,9 @@ export default function BudgetsPage() {
       checkRows?: BudgetImportCheckRow[];
     } | null
   ) => {
-    const apiCheckRows = payload?.checkRows ?? [];
-    const checkRows = [...spreadsheetCheckRows, ...apiCheckRows].sort(
-      (a, b) => a.rowNumber - b.rowNumber
+    const checkRows = mergeBudgetImportCheckRows(
+      spreadsheetCheckRows,
+      payload?.checkRows
     );
     const previewRows = payload?.previewRows ?? [];
     const valid = payload?.valid ?? previewRows.length;
@@ -1281,7 +1292,11 @@ export default function BudgetsPage() {
         budgetCode: row.budgetCode,
       }));
 
-      const checkRows = importPreview.checkRows;
+      // Merge preview exclusions with any new exclusions from confirmation.
+      const checkRows = mergeBudgetImportCheckRows(
+        importPreview.checkRows,
+        payload.checkRows
+      );
       setImportResults({
         imported: payload.imported ?? created.length,
         excluded: checkRows.length,
