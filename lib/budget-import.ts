@@ -32,10 +32,24 @@ export type BudgetImportPreviewRow = {
   duplicateReasons: string[];
 };
 
+/** Row excluded from import — included in “Download Records to Check”. */
+export type BudgetImportCheckRow = {
+  rowNumber: number;
+  employeeIdNumber: string;
+  uploadedName: string;
+  masterName: string;
+  plannedCourse: string;
+  amount: string;
+  currency: string;
+  plannedCourseStartDate: string;
+  reason: string;
+};
+
 export type BudgetImportValidationResult =
   | {
       ok: true;
       records: BudgetImportRecord[];
+      checkRows: BudgetImportCheckRow[];
       fileName: string;
       skippedSampleRow: boolean;
     }
@@ -44,6 +58,55 @@ export type BudgetImportValidationResult =
       errors: string[];
       fileName: string;
     };
+
+function csvEscape(value: string) {
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+/** Full rejected-row report — never truncated. */
+export function downloadBudgetImportCheckCsv(
+  rows: BudgetImportCheckRow[],
+  fileLabel = 'Records-to-Check'
+) {
+  const header = [
+    'Worksheet Row',
+    'Employee ID',
+    'Uploaded Name',
+    'Employee Master Name',
+    'Planned Course',
+    'Budget',
+    'Currency',
+    'Planned Course Start Date',
+    'Rejection Reason',
+  ];
+  const lines = [
+    header.join(','),
+    ...rows.map((row) =>
+      [
+        row.rowNumber,
+        row.employeeIdNumber,
+        row.uploadedName,
+        row.masterName,
+        row.plannedCourse,
+        row.amount,
+        row.currency,
+        row.plannedCourseStartDate,
+        row.reason,
+      ]
+        .map((value) => csvEscape(String(value ?? '')))
+        .join(',')
+    ),
+  ];
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `Budget-Import-${fileLabel}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
 
 const HEADERS = [
   'Employee ID',
@@ -104,12 +167,19 @@ function parseAmount(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function formatDateCell(value: unknown): string {
+  if (isBlankCell(value)) return '';
+  const parsed = parseImportDate(value);
+  if (parsed.ok) return parsed.iso;
+  return normalizeString(value);
+}
+
 function parseRow(
   row: unknown[],
   rowNumber: number,
   columnsByHeader: Map<string, number>
-): { record: BudgetImportRecord | null; errors: string[] } {
-  const errors: string[] = [];
+): { record: BudgetImportRecord | null; checkRow: BudgetImportCheckRow | null } {
+  const reasons: string[] = [];
   const get = (header: (typeof HEADERS)[number]) => {
     const index = columnsByHeader.get(header.toLowerCase());
     return index === undefined ? '' : row[index];
@@ -121,36 +191,32 @@ function parseRow(
   const amountRaw = get('Budget');
   const currencyRaw = normalizeString(get('Currency')).toUpperCase();
   const dateRaw = get('Planned Course Start Date');
+  const amountDisplay = isBlankCell(amountRaw) ? '' : normalizeString(amountRaw);
+  const dateDisplay = formatDateCell(dateRaw);
 
-  if (!employeeIdNumber) {
-    errors.push(`Row ${rowNumber}: Employee ID is required.`);
-  }
-  if (!fullName) {
-    errors.push(`Row ${rowNumber}: Full Name is required.`);
-  }
-  if (!plannedCourse) {
-    errors.push(`Row ${rowNumber}: Planned Course is required.`);
-  }
+  if (!employeeIdNumber) reasons.push('Employee ID is required.');
+  if (!fullName) reasons.push('Full Name is required.');
+  if (!plannedCourse) reasons.push('Planned Course is required.');
 
   const amount = parseAmount(amountRaw);
   if (isBlankCell(amountRaw)) {
-    errors.push(`Row ${rowNumber}: Budget is required.`);
+    reasons.push('Budget is required.');
   } else if (amount === null || amount < 0) {
-    errors.push(`Row ${rowNumber}: Budget must be a valid non-negative amount.`);
+    reasons.push('Budget must be a valid non-negative amount.');
   }
 
   if (!currencyRaw) {
-    errors.push(`Row ${rowNumber}: Currency is required.`);
+    reasons.push('Currency is required.');
   } else if (!CURRENCY_SET.has(currencyRaw)) {
-    errors.push(`Row ${rowNumber}: Currency must be AFN, USD, or EUR.`);
+    reasons.push('Currency must be AFN, USD, or EUR.');
   }
 
   let plannedCourseStartDate = '';
   if (!isBlankCell(dateRaw)) {
     const parsed = parseImportDate(dateRaw);
     if (!parsed.ok) {
-      errors.push(
-        `Row ${rowNumber}: Invalid Planned Course Start Date. ${
+      reasons.push(
+        `Invalid Planned Course Start Date. ${
           parsed.blank ? 'Use YYYY-MM-DD or leave blank.' : parsed.message
         }`
       );
@@ -159,8 +225,21 @@ function parseRow(
     }
   }
 
-  if (errors.length > 0) {
-    return { record: null, errors };
+  if (reasons.length > 0) {
+    return {
+      record: null,
+      checkRow: {
+        rowNumber,
+        employeeIdNumber,
+        uploadedName: fullName,
+        masterName: '',
+        plannedCourse,
+        amount: amountDisplay,
+        currency: currencyRaw,
+        plannedCourseStartDate: dateDisplay,
+        reason: reasons.join(' '),
+      },
+    };
   }
 
   return {
@@ -173,7 +252,7 @@ function parseRow(
       plannedCourseStartDate,
       rowNumber,
     },
-    errors: [],
+    checkRow: null,
   };
 }
 
@@ -347,7 +426,7 @@ export async function validateBudgetImportFile(
   }
 
   const records: BudgetImportRecord[] = [];
-  const errors: string[] = [];
+  const checkRows: BudgetImportCheckRow[] = [];
   let skippedSampleRow = false;
 
   rows.slice(1).forEach((row, index) => {
@@ -359,8 +438,8 @@ export async function validateBudgetImportFile(
     if (isEmpty) return;
 
     const parsed = parseRow(row, rowNumber, headerMap);
-    if (parsed.errors.length > 0) {
-      errors.push(...parsed.errors);
+    if (parsed.checkRow) {
+      checkRows.push(parsed.checkRow);
       return;
     }
     if (!parsed.record) return;
@@ -373,11 +452,7 @@ export async function validateBudgetImportFile(
     records.push(parsed.record);
   });
 
-  if (errors.length > 0) {
-    return { ok: false, fileName: file.name, errors };
-  }
-
-  if (records.length === 0) {
+  if (records.length === 0 && checkRows.length === 0) {
     return {
       ok: false,
       fileName: file.name,
@@ -393,6 +468,7 @@ export async function validateBudgetImportFile(
     ok: true,
     fileName: file.name,
     records,
+    checkRows,
     skippedSampleRow,
   };
 }

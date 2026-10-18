@@ -6,6 +6,7 @@ import {
   budgetDuplicateKey,
   isBudgetImportSampleRow,
   normalizePersonName,
+  type BudgetImportCheckRow,
   type BudgetImportPreviewRow,
   type BudgetImportRecord,
 } from '@/lib/budget-import';
@@ -41,18 +42,114 @@ function totalsByCurrency(records: Array<{ amount: number; currency: string }>) 
   return totals;
 }
 
+function checkRowFromPartial(
+  partial: {
+    rowNumber: number;
+    employeeIdNumber?: string;
+    fullName?: string;
+    masterName?: string;
+    plannedCourse?: string;
+    amount?: string | number;
+    currency?: string;
+    plannedCourseStartDate?: string;
+  },
+  reason: string
+): BudgetImportCheckRow {
+  return {
+    rowNumber: partial.rowNumber,
+    employeeIdNumber: String(partial.employeeIdNumber ?? '').trim(),
+    uploadedName: String(partial.fullName ?? '').trim(),
+    masterName: String(partial.masterName ?? '').trim(),
+    plannedCourse: String(partial.plannedCourse ?? '').trim(),
+    amount:
+      partial.amount === undefined || partial.amount === null
+        ? ''
+        : String(partial.amount),
+    currency: String(partial.currency ?? '').trim(),
+    plannedCourseStartDate: String(partial.plannedCourseStartDate ?? '')
+      .trim()
+      .slice(0, 10),
+    reason,
+  };
+}
+
 /** Optional calendar date: blank is allowed; non-blank must be YYYY-MM-DD / Excel date. */
 function validateOptionalCalendarDate(
-  value: unknown,
-  rowNumber: number
+  value: unknown
 ): { error: string | null; iso: string } {
   const parsed = parseImportDate(value);
   if (parsed.ok) return { error: null, iso: parsed.iso };
   if (parsed.blank) return { error: null, iso: '' };
   return {
-    error: `Row ${rowNumber}: Invalid Planned Course Start Date. ${parsed.message}`,
+    error: `Invalid Planned Course Start Date. ${parsed.message}`,
     iso: '',
   };
+}
+
+type SoftCleanResult = {
+  cleaned: BudgetImportRecord[];
+  checkRows: BudgetImportCheckRow[];
+};
+
+function softCleanRecords(rawRecords: BudgetImportRecord[]): SoftCleanResult {
+  const currencySet = new Set(BUDGET_CURRENCIES);
+  const cleaned: BudgetImportRecord[] = [];
+  const checkRows: BudgetImportCheckRow[] = [];
+
+  for (const raw of rawRecords) {
+    const rowNumber = Number(raw.rowNumber) || cleaned.length + checkRows.length + 2;
+    const employeeIdNumber = String(raw.employeeIdNumber ?? '').trim();
+    const fullName = String(raw.fullName ?? '').trim();
+    const plannedCourse = String(raw.plannedCourse ?? '').trim();
+    const currency = String(raw.currency ?? '').trim().toUpperCase();
+    const amount = Number(raw.amount);
+    const dateResult = validateOptionalCalendarDate(raw.plannedCourseStartDate);
+    const reasons: string[] = [];
+
+    if (employeeIdNumber.toLowerCase() === BUDGET_IMPORT_SAMPLE_EMPLOYEE_ID.toLowerCase()) {
+      reasons.push('Sample template row cannot be imported.');
+    }
+    if (!employeeIdNumber) reasons.push('Employee ID is required.');
+    if (!fullName) reasons.push('Full Name is required.');
+    if (!plannedCourse) reasons.push('Planned Course is required.');
+    if (!Number.isFinite(amount) || amount < 0) {
+      reasons.push('Budget must be a valid non-negative amount.');
+    }
+    if (!currencySet.has(currency as (typeof BUDGET_CURRENCIES)[number])) {
+      reasons.push('Currency must be AFN, USD, or EUR.');
+    }
+    if (dateResult.error) reasons.push(dateResult.error);
+
+    if (reasons.length > 0) {
+      checkRows.push(
+        checkRowFromPartial(
+          {
+            rowNumber,
+            employeeIdNumber,
+            fullName,
+            plannedCourse,
+            amount: Number.isFinite(amount) ? amount : String(raw.amount ?? ''),
+            currency,
+            plannedCourseStartDate: String(raw.plannedCourseStartDate ?? ''),
+          },
+          reasons.join(' ')
+        )
+      );
+      continue;
+    }
+
+    cleaned.push({
+      employeeIdNumber,
+      fullName,
+      plannedCourse,
+      amount,
+      currency: currency as BudgetImportRecord['currency'],
+      plannedCourseStartDate: dateResult.iso,
+      rowNumber,
+    });
+  }
+
+  return { cleaned, checkRows };
 }
 
 async function buildPreview(
@@ -60,9 +157,13 @@ async function buildPreview(
   orgId: string,
   cleaned: BudgetImportRecord[]
 ): Promise<
-  | { ok: true; rows: BudgetImportPreviewRow[]; errors: string[] }
+  | { ok: true; rows: BudgetImportPreviewRow[]; checkRows: BudgetImportCheckRow[] }
   | { ok: false; errors: string[] }
 > {
+  if (cleaned.length === 0) {
+    return { ok: true, rows: [], checkRows: [] };
+  }
+
   const idNumbers = [...new Set(cleaned.map((r) => r.employeeIdNumber))];
   const employeeByIdNumber = new Map<
     string,
@@ -164,32 +265,50 @@ async function buildPreview(
     workbookKeyCounts.set(key, (workbookKeyCounts.get(key) ?? 0) + 1);
   }
 
-  const validationErrors: string[] = [];
+  const checkRows: BudgetImportCheckRow[] = [];
   const resolved: BudgetImportPreviewRow[] = [];
 
   for (const row of cleaned) {
+    const base = {
+      rowNumber: row.rowNumber,
+      employeeIdNumber: row.employeeIdNumber,
+      fullName: row.fullName,
+      plannedCourse: row.plannedCourse,
+      amount: row.amount,
+      currency: row.currency,
+      plannedCourseStartDate: row.plannedCourseStartDate,
+    };
+
     if (isBudgetImportSampleRow(row)) {
-      validationErrors.push(`Row ${row.rowNumber}: Sample template row cannot be imported.`);
+      checkRows.push(
+        checkRowFromPartial(base, 'Sample template row cannot be imported.')
+      );
       continue;
     }
 
     const emp = employeeByIdNumber.get(row.employeeIdNumber.toLowerCase());
     if (!emp || emp.deleted_at) {
-      validationErrors.push(`Row ${row.rowNumber}: Employee ID was not found.`);
+      checkRows.push(checkRowFromPartial(base, 'Employee ID was not found.'));
       continue;
     }
 
     const status = String(emp.employment_status ?? '');
     if (status !== 'active' && status !== 'inactive') {
-      validationErrors.push(
-        `Row ${row.rowNumber}: Employee status must be Active or Inactive.`
+      checkRows.push(
+        checkRowFromPartial(
+          { ...base, masterName: emp.full_name },
+          'Employee status must be Active or Inactive.'
+        )
       );
       continue;
     }
 
     if (normalizePersonName(emp.full_name) !== normalizePersonName(row.fullName)) {
-      validationErrors.push(
-        `Row ${row.rowNumber}: Full Name does not match the employee master.`
+      checkRows.push(
+        checkRowFromPartial(
+          { ...base, masterName: emp.full_name },
+          'Full Name does not match the employee master.'
+        )
       );
       continue;
     }
@@ -217,7 +336,7 @@ async function buildPreview(
     });
   }
 
-  return { ok: true, rows: resolved, errors: validationErrors };
+  return { ok: true, rows: resolved, checkRows };
 }
 
 export async function POST(request: Request) {
@@ -232,115 +351,56 @@ export async function POST(request: Request) {
   const access = await requireBudgetApiAccess(request, orgId, 'create');
   if (!access.ok) return access.response;
 
-  if (!isRecordArray(body?.records) || body!.records.length === 0) {
+  if (!isRecordArray(body?.records)) {
     return NextResponse.json(
-      { error: 'records must be a non-empty array.' },
+      { error: 'records must be an array.' },
       { status: 400 }
     );
   }
 
-  const currencySet = new Set(BUDGET_CURRENCIES);
-  const hardErrors: string[] = [];
-  const cleaned: BudgetImportRecord[] = [];
-
-  for (const raw of body!.records) {
-    const rowNumber = Number(raw.rowNumber) || cleaned.length + 2;
-    const employeeIdNumber = String(raw.employeeIdNumber ?? '').trim();
-    const fullName = String(raw.fullName ?? '').trim();
-    const plannedCourse = String(raw.plannedCourse ?? '').trim();
-    const currency = String(raw.currency ?? '').trim().toUpperCase();
-    const amount = Number(raw.amount);
-    const dateResult = validateOptionalCalendarDate(raw.plannedCourseStartDate, rowNumber);
-
-    if (employeeIdNumber.toLowerCase() === BUDGET_IMPORT_SAMPLE_EMPLOYEE_ID.toLowerCase()) {
-      hardErrors.push(`Row ${rowNumber}: Sample template row cannot be imported.`);
-      continue;
-    }
-    if (!employeeIdNumber) {
-      hardErrors.push(`Row ${rowNumber}: Employee ID is required.`);
-      continue;
-    }
-    if (!fullName) {
-      hardErrors.push(`Row ${rowNumber}: Full Name is required.`);
-      continue;
-    }
-    if (!plannedCourse) {
-      hardErrors.push(`Row ${rowNumber}: Planned Course is required.`);
-      continue;
-    }
-    if (!Number.isFinite(amount) || amount < 0) {
-      hardErrors.push(`Row ${rowNumber}: Budget must be a valid non-negative amount.`);
-      continue;
-    }
-    if (!currencySet.has(currency as (typeof BUDGET_CURRENCIES)[number])) {
-      hardErrors.push(`Row ${rowNumber}: Currency must be AFN, USD, or EUR.`);
-      continue;
-    }
-    if (dateResult.error) {
-      hardErrors.push(dateResult.error);
-      continue;
-    }
-
-    cleaned.push({
-      employeeIdNumber,
-      fullName,
-      plannedCourse,
-      amount,
-      currency: currency as BudgetImportRecord['currency'],
-      plannedCourseStartDate: dateResult.iso,
-      rowNumber,
-    });
-  }
-
-  if (hardErrors.length > 0) {
-    return NextResponse.json(
-      {
-        error: hardErrors[0],
-        errors: hardErrors.slice(0, 100),
-        total: body!.records.length,
-        valid: 0,
-        invalid: hardErrors.length,
-        potentialDuplicates: 0,
-        totalsByCurrency: { AFN: 0, USD: 0, EUR: 0 },
-        previewRows: [],
-      },
-      { status: 400 }
-    );
-  }
-
+  const { cleaned, checkRows: fieldCheckRows } = softCleanRecords(body!.records);
   const preview = await buildPreview(access, orgId, cleaned);
   if (!preview.ok) {
     return NextResponse.json({ error: preview.errors[0] }, { status: 400 });
   }
 
-  if (preview.errors.length > 0) {
-    return NextResponse.json(
-      {
-        error: preview.errors[0],
-        errors: preview.errors.slice(0, 100),
-        total: cleaned.length,
-        valid: preview.rows.length,
-        invalid: preview.errors.length,
-        potentialDuplicates: preview.rows.filter((r) => r.isPotentialDuplicate).length,
-        totalsByCurrency: totalsByCurrency(preview.rows),
-        previewRows: preview.rows,
-      },
-      { status: 400 }
-    );
-  }
-
-  const potentialDuplicates = preview.rows.filter((r) => r.isPotentialDuplicate).length;
+  const checkRows = [...fieldCheckRows, ...preview.checkRows].sort(
+    (a, b) => a.rowNumber - b.rowNumber
+  );
+  const validRows = preview.rows;
+  const validRecords = cleaned.filter((row) =>
+    validRows.some((v) => v.rowNumber === row.rowNumber)
+  );
+  const potentialDuplicates = validRows.filter((r) => r.isPotentialDuplicate).length;
+  const total = body!.records.length;
+  const summary = {
+    total,
+    valid: validRows.length,
+    invalid: checkRows.length,
+    potentialDuplicates,
+    totalsByCurrency: totalsByCurrency(validRecords),
+    previewRows: validRows,
+    checkRows,
+  };
 
   if (body!.preview) {
     return NextResponse.json({
       ok: true,
-      total: preview.rows.length,
-      valid: preview.rows.length,
-      invalid: 0,
-      potentialDuplicates,
-      totalsByCurrency: totalsByCurrency(preview.rows),
-      previewRows: preview.rows,
+      ...summary,
     });
+  }
+
+  if (validRecords.length === 0) {
+    return NextResponse.json(
+      {
+        error: 'No valid records to import.',
+        outcome: 'rolled_back' as const,
+        imported: 0,
+        excluded: checkRows.length,
+        ...summary,
+      },
+      { status: 400 }
+    );
   }
 
   const importId = String(body!.importId ?? '').trim();
@@ -351,13 +411,13 @@ export async function POST(request: Request) {
     );
   }
 
-  const fingerprint = budgetImportFingerprint(cleaned);
+  const fingerprint = budgetImportFingerprint(validRecords);
   const { data, error } = await access.sessionClient.rpc('import_employee_budgets', {
     p_org_id: orgId,
     p_import_id: importId,
     p_fingerprint: fingerprint,
     p_allow_duplicates: Boolean(body!.allowPotentialDuplicates),
-    p_rows: cleaned,
+    p_rows: validRecords,
   });
 
   if (error) {
@@ -368,7 +428,9 @@ export async function POST(request: Request) {
         detail: error.message,
         outcome: 'rolled_back' as const,
         imported: 0,
+        excluded: checkRows.length,
         importId,
+        checkRows,
       },
       { status: 400 }
     );
@@ -399,10 +461,12 @@ export async function POST(request: Request) {
         outcome: 'rolled_back' as const,
         needsDuplicateConfirmation: true,
         potentialDuplicates: result.potentialDuplicates ?? potentialDuplicates,
-        totalsByCurrency: result.totalsByCurrency ?? totalsByCurrency(preview.rows),
-        previewRows: result.previewRows ?? preview.rows,
+        totalsByCurrency: result.totalsByCurrency ?? totalsByCurrency(validRecords),
+        previewRows: result.previewRows ?? validRows,
+        checkRows,
         errors: result.errors ?? [],
         imported: 0,
+        excluded: checkRows.length,
         importId,
       },
       { status: 409 }
@@ -415,7 +479,7 @@ export async function POST(request: Request) {
     budgetCode: row.budgetCode,
     employeeIdNumber:
       row.employeeIdNumber ??
-      preview.rows.find((p) => p.rowNumber === row.rowNumber)?.employeeIdNumber ??
+      validRows.find((p) => p.rowNumber === row.rowNumber)?.employeeIdNumber ??
       '',
   }));
 
@@ -423,11 +487,13 @@ export async function POST(request: Request) {
     ok: true,
     outcome: 'completed' as const,
     imported: result?.imported ?? created.length,
-    total: result?.total ?? cleaned.length,
+    excluded: checkRows.length,
+    total: result?.total ?? validRecords.length,
     potentialDuplicates: result?.potentialDuplicates ?? 0,
-    totalsByCurrency: result?.totalsByCurrency ?? totalsByCurrency(preview.rows),
+    totalsByCurrency: result?.totalsByCurrency ?? totalsByCurrency(validRecords),
     created,
-    previewRows: result?.previewRows ?? preview.rows,
+    previewRows: result?.previewRows ?? validRows,
+    checkRows,
     importId,
   });
 }
