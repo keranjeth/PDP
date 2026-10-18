@@ -223,6 +223,16 @@ export const EMPLOYEE_IMPORT_COLUMNS: EmployeeImportColumn[] = [
 
 export const TEMPLATE_SHEET_NAME = 'Employee Data';
 export const TEMPLATE_FILE_NAME = 'Employee-Data.xlsx';
+export const EMPLOYEE_EXPORT_SHEET_NAME = 'Employee Records';
+export const EMPLOYEE_EXPORT_FILE_NAME = 'Employee-Records.xlsx';
+
+export type EmployeeTableExportRow = {
+  idNumber: string;
+  fullName: string;
+  designation: string;
+  department: string;
+  region: string;
+};
 
 const SAMPLE_IMPORT_RECORD: EmployeeImportRecord = {
   idNumber: '123456',
@@ -617,6 +627,97 @@ export function downloadEmployeeImportTemplate() {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   })();
+}
+
+/** Export table columns for the current Employee Records view (all matching rows). */
+export async function downloadEmployeeRecordsExport(
+  rows: EmployeeTableExportRow[],
+  options?: { fileName?: string; sheetName?: string }
+) {
+  const ExcelJSMod = await import('exceljs');
+  const ExcelJS = ExcelJSMod.default;
+  const workbook = new ExcelJS.Workbook();
+  const sheetName = options?.sheetName ?? EMPLOYEE_EXPORT_SHEET_NAME;
+  const ws = workbook.addWorksheet(sheetName, {
+    views: [{ state: 'frozen', ySplit: 1, activeCell: 'A2', showGridLines: true }],
+  });
+
+  const PRIMARY_ARGB = 'FF16D187';
+  const thin = { style: 'thin' as const, color: { argb: PRIMARY_ARGB } };
+  const headers = [
+    'ID Number',
+    'Full Name',
+    'Designation',
+    'Department',
+    'Region',
+  ] as const;
+
+  ws.addRow([...headers]);
+  for (const row of rows) {
+    ws.addRow([
+      String(row.idNumber ?? ''),
+      String(row.fullName ?? ''),
+      String(row.designation ?? ''),
+      String(row.department ?? ''),
+      String(row.region ?? ''),
+    ]);
+  }
+
+  const headerRow = ws.getRow(1);
+  headerRow.height = 20;
+  headerRow.eachCell({ includeEmpty: false }, (cell) => {
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: PRIMARY_ARGB },
+    };
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+  });
+
+  const columnCount = headers.length;
+  const rowCount = ws.rowCount;
+  for (let r = 1; r <= rowCount; r += 1) {
+    const excelRow = ws.getRow(r);
+    for (let c = 1; c <= columnCount; c += 1) {
+      const cell = excelRow.getCell(c);
+      cell.border = { top: thin, left: thin, bottom: thin, right: thin };
+      if (r !== 1) {
+        cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: false };
+      }
+    }
+  }
+
+  // Keep Employee IDs as text so leading zeros are preserved.
+  ws.getColumn(1).numFmt = '@';
+  for (let r = 2; r <= rowCount; r += 1) {
+    const cell = ws.getRow(r).getCell(1);
+    cell.value = String(cell.value ?? '');
+    cell.numFmt = '@';
+  }
+
+  for (let col = 1; col <= columnCount; col += 1) {
+    let maxLen = String(headers[col - 1]).length;
+    ws.eachRow({ includeEmpty: false }, (row) => {
+      const v = row.getCell(col).value;
+      const text = v == null ? '' : String(v);
+      maxLen = Math.max(maxLen, text.length);
+    });
+    ws.getColumn(col).width = Math.min(Math.max(maxLen + 2.5, 11), 48);
+  }
+
+  const buf = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buf], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = options?.fileName ?? EMPLOYEE_EXPORT_FILE_NAME;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 export async function validateEmployeeImportFile(

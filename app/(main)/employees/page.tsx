@@ -1,7 +1,7 @@
 'use client';
 
 import type { ChangeEvent, DragEvent } from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
@@ -17,6 +17,7 @@ import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import {
   EmployeeImportRecord,
   downloadEmployeeImportTemplate,
+  downloadEmployeeRecordsExport,
   validateEmployeeImportFile,
 } from '@/lib/employee-import';
 import { buildEmployeeRows, DashboardEmployeeRow } from '@/lib/dashboard';
@@ -476,8 +477,15 @@ export default function EmployeesPage() {
   const [isImporting, setIsImporting] = useState(false);
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
   const [employeePreviewText, setEmployeePreviewText] = useState<string | null>(null);
+  const [sortedExportRows, setSortedExportRows] = useState<DashboardEmployeeRow[]>([]);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const employeeImportFileRef = useRef<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleDisplayRowsChange = useCallback((rows: DashboardEmployeeRow[]) => {
+    setSortedExportRows(rows);
+  }, []);
 
   const groupedImportErrors = useMemo(
     () => groupImportValidationErrors(importErrors),
@@ -1198,6 +1206,43 @@ export default function EmployeesPage() {
     }
   };
 
+  const canReadEmployees = can(
+    (membershipRole ?? null) as OrgMemberRole | null,
+    'employees',
+    'read'
+  );
+
+  const handleExportEmployees = async () => {
+    if (!canReadEmployees || isExporting) return;
+    setExportError(null);
+    setIsExporting(true);
+    try {
+      await downloadEmployeeRecordsExport(
+        sortedExportRows.map((row) => ({
+          idNumber: row.idNumber,
+          fullName: row.fullName,
+          designation: row.designation,
+          department: row.department,
+          region: row.region,
+        })),
+        {
+          fileName:
+            employeeTab === 'leavers' ? 'Employee-Leavers.xlsx' : 'Employee-Records.xlsx',
+          sheetName: employeeTab === 'leavers' ? 'Leavers' : 'Employee Records',
+        }
+      );
+    } catch (error) {
+      console.error('Employee export failed:', error);
+      setExportError(
+        error instanceof Error
+          ? error.message
+          : 'Export failed. Please try again.'
+      );
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   return (
     <div className="space-y-4 bg-slate-50 p-4 sm:p-6">
       {templateDownloadToastOpen ? (
@@ -1275,7 +1320,10 @@ export default function EmployeesPage() {
         <div className="flex gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <button
             type="button"
-            onClick={() => setEmployeeTab('active')}
+            onClick={() => {
+              setExportError(null);
+              setEmployeeTab('active');
+            }}
             className={`relative px-3 py-2 text-sm font-semibold transition-colors ${
               employeeTab === 'active'
                 ? 'text-[var(--analytics-budget)] after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-[var(--analytics-budget)]'
@@ -1286,7 +1334,10 @@ export default function EmployeesPage() {
           </button>
           <button
             type="button"
-            onClick={() => setEmployeeTab('leavers')}
+            onClick={() => {
+              setExportError(null);
+              setEmployeeTab('leavers');
+            }}
             className={`relative px-3 py-2 text-sm font-semibold transition-colors ${
               employeeTab === 'leavers'
                 ? 'text-[var(--analytics-budget)] after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-[var(--analytics-budget)]'
@@ -1315,12 +1366,13 @@ export default function EmployeesPage() {
         description={
           employeeTab === 'leavers'
             ? 'Offboarded employees (snapshot preserved)'
-            : 'Complete list of all active employees'
+            : 'View and manage employee information.'
         }
         rows={filteredEmployeeRows}
         emptyMessage="No employees found. Add your first employee or import a validated template to get started."
         sortable
         defaultSort={{ key: 'fullName', direction: 'asc' }}
+        onDisplayRowsChange={handleDisplayRowsChange}
         rowSelection={
           hardDeleteSelectMode && isSuperAdmin
             ? {
@@ -1337,94 +1389,115 @@ export default function EmployeesPage() {
               : undefined
         }
         actions={
-          employeeTab === 'active' || isSuperAdmin ? (
-            <>
-              {employeeTab === 'active' ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={openImportModal}
-                    className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)]"
-                  >
-                    <UploadIcon className="h-4 w-4" />
-                    Import
-                  </button>
+          <>
+            {employeeTab === 'active' ? (
+              <button
+                type="button"
+                onClick={openImportModal}
+                className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)]"
+              >
+                <UploadIcon className="h-4 w-4" />
+                Import
+              </button>
+            ) : null}
 
-                  <Link
-                    href="/employees/new"
-                    className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)]"
-                  >
-                    <PlusGlyph className="h-4 w-4" />
-                    New
-                  </Link>
+            {canReadEmployees ? (
+              <button
+                type="button"
+                onClick={() => void handleExportEmployees()}
+                disabled={isExporting || !orgId}
+                className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)] disabled:opacity-60"
+              >
+                <DownloadIcon className="h-4 w-4" />
+                {isExporting ? 'Exporting…' : 'Export'}
+              </button>
+            ) : null}
 
-                  {canUpdateEmployees ? (
-                    <button
-                      type="button"
-                      title="Offboard Employee"
-                      onClick={() => {
-                        exitHardDeleteMode();
-                        if (!offboardSelectMode) {
-                          setOffboardSelectMode(true);
-                          return;
-                        }
-                        if (offboardSelectedIds.size > 0) {
-                          openOffboardModalForIds(Array.from(offboardSelectedIds));
-                          return;
-                        }
-                        setOffboardSelectMode(false);
-                        setOffboardSelectedIds(new Set());
-                      }}
-                      className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-rose-600 bg-transparent px-3 text-sm font-medium text-rose-700 transition-colors hover:bg-rose-50"
-                    >
-                      <OffboardIcon className="h-4 w-4" />
-                      {!offboardSelectMode
-                        ? 'Offboard'
-                        : offboardSelectedIds.size > 0
-                          ? `Offboard (${offboardSelectedIds.size})`
-                          : 'Cancel'}
-                    </button>
-                  ) : null}
-                </>
-              ) : null}
+            {employeeTab === 'active' ? (
+              <Link
+                href="/employees/new"
+                className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)]"
+              >
+                <PlusGlyph className="h-4 w-4" />
+                New
+              </Link>
+            ) : null}
 
-              {isSuperAdmin ? (
-                <button
-                  type="button"
-                  title="Permanently delete employee data"
-                  onClick={() => {
-                    setOffboardSelectMode(false);
-                    setOffboardSelectedIds(new Set());
-                    if (!hardDeleteSelectMode) {
-                      setHardDeleteSelectMode(true);
-                      return;
-                    }
-                    if (hardDeleteSelectedIds.size > 0) {
-                      openHardDeleteModalForIds(Array.from(hardDeleteSelectedIds));
-                      return;
-                    }
-                    exitHardDeleteMode();
-                  }}
-                  className="inline-flex h-9 min-w-[9.5rem] shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-xl border border-rose-700 bg-rose-50 px-3 text-sm font-medium text-rose-800 hover:bg-rose-100"
-                >
-                  <TrashIcon className="h-4 w-4" />
-                  {!hardDeleteSelectMode
-                    ? 'Delete'
-                    : hardDeleteSelectedIds.size > 0
-                      ? `Delete (${hardDeleteSelectedIds.size})`
-                      : 'Cancel'}
-                </button>
-              ) : null}
-            </>
-          ) : null
+            {employeeTab === 'active' && canUpdateEmployees ? (
+              <button
+                type="button"
+                title="Offboard Employee"
+                onClick={() => {
+                  exitHardDeleteMode();
+                  if (!offboardSelectMode) {
+                    setOffboardSelectMode(true);
+                    return;
+                  }
+                  if (offboardSelectedIds.size > 0) {
+                    openOffboardModalForIds(Array.from(offboardSelectedIds));
+                    return;
+                  }
+                  setOffboardSelectMode(false);
+                  setOffboardSelectedIds(new Set());
+                }}
+                className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-rose-600 bg-transparent px-3 text-sm font-medium text-rose-700 transition-colors hover:bg-rose-50"
+              >
+                <OffboardIcon className="h-4 w-4" />
+                {!offboardSelectMode
+                  ? 'Offboard'
+                  : offboardSelectedIds.size > 0
+                    ? `Offboard (${offboardSelectedIds.size})`
+                    : 'Cancel'}
+              </button>
+            ) : null}
+
+            {isSuperAdmin ? (
+              <button
+                type="button"
+                title="Permanently delete employee data"
+                onClick={() => {
+                  setOffboardSelectMode(false);
+                  setOffboardSelectedIds(new Set());
+                  if (!hardDeleteSelectMode) {
+                    setHardDeleteSelectMode(true);
+                    return;
+                  }
+                  if (hardDeleteSelectedIds.size > 0) {
+                    openHardDeleteModalForIds(Array.from(hardDeleteSelectedIds));
+                    return;
+                  }
+                  exitHardDeleteMode();
+                }}
+                className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-rose-700 bg-rose-50 px-3 text-sm font-medium text-rose-800 hover:bg-rose-100"
+              >
+                <TrashIcon className="h-4 w-4" />
+                {!hardDeleteSelectMode
+                  ? 'Delete'
+                  : hardDeleteSelectedIds.size > 0
+                    ? `Delete (${hardDeleteSelectedIds.size})`
+                    : 'Cancel'}
+              </button>
+            ) : null}
+          </>
         }
         toolbar={
-          <TableSearchInput
-            id="employee-search"
-            value={searchTerm}
-            onChange={setSearchTerm}
-            placeholder="Search employees..."
-          />
+          <div className="space-y-1">
+            <TableSearchInput
+              id="employee-search"
+              value={searchTerm}
+              onChange={(next) => {
+                setExportError(null);
+                setSearchTerm(next);
+              }}
+              placeholder="Search…"
+              containerClassName="w-[170px] max-w-full shrink-0"
+            />
+            {exportError ? (
+              <p className="text-xs text-rose-700" role="alert">
+                {exportError}
+              </p>
+            ) : null}
+          </div>
         }
         renderDetailsCell={
           employeeTab === 'active'
@@ -1737,6 +1810,19 @@ function UploadIcon({ className }: { className: string }) {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className={className}>
       <path
         d="M12 16V4m0 0-4 4m4-4 4 4M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function DownloadIcon({ className }: { className: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className={className}>
+      <path
+        d="M12 4v12m0 0 4-4m-4 4-4-4M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"

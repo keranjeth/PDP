@@ -531,6 +531,7 @@ export function CompactEmployeeTable<
   profileTab = 'Overview',
   /** When set, shows a leading checkbox column for bulk actions (e.g. offboarding). */
   rowSelection,
+  onDisplayRowsChange,
 }: {
   title: string;
   description: string;
@@ -554,6 +555,8 @@ export function CompactEmployeeTable<
     onToggleRow: (rowId: string) => void;
     onToggleAllVisible: (select: boolean, visibleRowIds: string[]) => void;
   };
+  /** Full sorted row set (all pages) for export and similar actions. */
+  onDisplayRowsChange?: (rows: T[]) => void;
 }) {
   void _amountLabel;
   const [sortState, setSortState] = useState<CompactEmployeeSortState>(
@@ -584,6 +587,10 @@ export function CompactEmployeeTable<
       return sortState.direction === 'asc' ? comparison : -comparison;
     });
   }, [rows, sortable, sortState]);
+
+  useEffect(() => {
+    onDisplayRowsChange?.(displayRows);
+  }, [displayRows, onDisplayRowsChange]);
 
   const rowsIdentity = useMemo(
     () => `${rows.length}:${rows.map((r) => r.id).join(',')}`,
@@ -738,17 +745,19 @@ export function CompactEmployeeTable<
 
   return (
     <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-col gap-4 px-4 py-5 sm:px-6 sm:py-6 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex flex-col gap-4 px-4 py-4 sm:px-6">
         <div className="min-w-0">
           <h3 className="text-[18px] font-semibold text-slate-950">{title}</h3>
           <p className="mt-1 text-sm text-slate-500">{description}</p>
         </div>
         {hasHeaderControls ? (
-          <div className="flex w-full flex-col gap-3 lg:w-auto lg:flex-row lg:items-center">
-            {toolbar ? <div className="w-full lg:w-auto">{toolbar}</div> : null}
-            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap lg:flex-nowrap">
-              {headerActions}
-            </div>
+          <div className="flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-3">
+            {toolbar ? <div className="min-w-0 shrink-0">{toolbar}</div> : null}
+            {actions ? (
+              <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+                {headerActions}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
