@@ -41,14 +41,18 @@ function totalsByCurrency(records: Array<{ amount: number; currency: string }>) 
   return totals;
 }
 
-function validateCalendarDate(value: unknown, rowNumber: number): string | null {
+/** Optional calendar date: blank is allowed; non-blank must be YYYY-MM-DD / Excel date. */
+function validateOptionalCalendarDate(
+  value: unknown,
+  rowNumber: number
+): { error: string | null; iso: string } {
   const parsed = parseImportDate(value);
-  if (!parsed.ok) {
-    return parsed.blank
-      ? `Row ${rowNumber}: Planned Course Start Date is required.`
-      : `Row ${rowNumber}: Invalid Planned Course Start Date. ${parsed.message}`;
-  }
-  return null;
+  if (parsed.ok) return { error: null, iso: parsed.iso };
+  if (parsed.blank) return { error: null, iso: '' };
+  return {
+    error: `Row ${rowNumber}: Invalid Planned Course Start Date. ${parsed.message}`,
+    iso: '',
+  };
 }
 
 async function buildPreview(
@@ -138,7 +142,7 @@ async function buildPreview(
       const r = row as {
         employee_id: string;
         planned_course: string;
-        planned_course_start_date: string;
+        planned_course_start_date: string | null;
       };
       const emp = [...employeeByIdNumber.values()].find((e) => e.id === r.employee_id);
       if (!emp) continue;
@@ -146,7 +150,9 @@ async function buildPreview(
         budgetDuplicateKey({
           employeeIdNumber: emp.id_number,
           plannedCourse: r.planned_course,
-          plannedCourseStartDate: String(r.planned_course_start_date).slice(0, 10),
+          plannedCourseStartDate: r.planned_course_start_date
+            ? String(r.planned_course_start_date).slice(0, 10)
+            : '',
         })
       );
     }
@@ -244,8 +250,7 @@ export async function POST(request: Request) {
     const plannedCourse = String(raw.plannedCourse ?? '').trim();
     const currency = String(raw.currency ?? '').trim().toUpperCase();
     const amount = Number(raw.amount);
-    const dateError = validateCalendarDate(raw.plannedCourseStartDate, rowNumber);
-    const plannedParsed = parseImportDate(raw.plannedCourseStartDate);
+    const dateResult = validateOptionalCalendarDate(raw.plannedCourseStartDate, rowNumber);
 
     if (employeeIdNumber.toLowerCase() === BUDGET_IMPORT_SAMPLE_EMPLOYEE_ID.toLowerCase()) {
       hardErrors.push(`Row ${rowNumber}: Sample template row cannot be imported.`);
@@ -271,8 +276,8 @@ export async function POST(request: Request) {
       hardErrors.push(`Row ${rowNumber}: Currency must be AFN, USD, or EUR.`);
       continue;
     }
-    if (dateError || !plannedParsed.ok) {
-      hardErrors.push(dateError ?? `Row ${rowNumber}: Invalid Planned Course Start Date.`);
+    if (dateResult.error) {
+      hardErrors.push(dateResult.error);
       continue;
     }
 
@@ -282,7 +287,7 @@ export async function POST(request: Request) {
       plannedCourse,
       amount,
       currency: currency as BudgetImportRecord['currency'],
-      plannedCourseStartDate: plannedParsed.iso,
+      plannedCourseStartDate: dateResult.iso,
       rowNumber,
     });
   }

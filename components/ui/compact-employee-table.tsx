@@ -65,6 +65,7 @@ export function CompactDataTable<T extends { id: string }>({
   emptyMessage,
   actions,
   toolbar,
+  headerContent,
   columns,
   sortable = false,
   defaultSort,
@@ -90,6 +91,11 @@ export function CompactDataTable<T extends { id: string }>({
   emptyMessage: string;
   actions?: ReactNode;
   toolbar?: ReactNode;
+  /**
+   * When set, replaces the default title/toolbar/actions header chrome.
+   * Other pages keep the default layout when this prop is omitted.
+   */
+  headerContent?: ReactNode;
   columns: Array<{ key: string; label: string; align?: 'left' | 'right' }>;
   sortable?: boolean;
   defaultSort?: { key: string; direction: 'asc' | 'desc' };
@@ -248,26 +254,32 @@ export function CompactDataTable<T extends { id: string }>({
           : 'overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm'
       }
     >
-      <div
-        className={`flex flex-col gap-4 px-4 py-5 sm:px-6 sm:py-6 lg:flex-row lg:items-center ${
-          hideTitleBlock ? 'lg:justify-end' : 'lg:justify-between'
-        }`}
-      >
-        {!hideTitleBlock ? (
-          <div className="min-w-0">
-            <h3 className="text-[18px] font-semibold text-slate-950">{title}</h3>
-            <p className="mt-1 text-sm text-slate-500">{description}</p>
-          </div>
-        ) : null}
-        {toolbar || actions ? (
-          <div className="flex w-full flex-col gap-3 lg:w-auto lg:flex-row lg:items-center">
-            {toolbar ? <div className="w-full lg:w-auto">{toolbar}</div> : null}
-            {actions ? (
-              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap lg:flex-nowrap">{actions}</div>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
+      {headerContent ? (
+        <div className="px-4 py-4 sm:px-6">{headerContent}</div>
+      ) : (
+        <div
+          className={`flex flex-col gap-4 px-4 py-5 sm:px-6 sm:py-6 lg:flex-row lg:items-center ${
+            hideTitleBlock ? 'lg:justify-end' : 'lg:justify-between'
+          }`}
+        >
+          {!hideTitleBlock ? (
+            <div className="min-w-0">
+              <h3 className="text-[18px] font-semibold text-slate-950">{title}</h3>
+              <p className="mt-1 text-sm text-slate-500">{description}</p>
+            </div>
+          ) : null}
+          {toolbar || actions ? (
+            <div className="flex w-full flex-col gap-3 lg:w-auto lg:flex-row lg:items-center">
+              {toolbar ? <div className="w-full lg:w-auto">{toolbar}</div> : null}
+              {actions ? (
+                <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap lg:flex-nowrap">
+                  {actions}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      )}
 
       <HeaderDivider />
 

@@ -18,6 +18,7 @@ export type BudgetListItem = {
   plannedCourse: string;
   initialAmount: number;
   currency: string;
+  /** YYYY-MM-DD, or empty when not set. */
   plannedCourseStartDate: string;
   currentAmount: number;
   remainingAmount: number;

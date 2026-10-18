@@ -396,7 +396,7 @@ function FilterSelect({
   options: Array<{ value: string; label: string }>;
 }) {
   return (
-    <div className="min-w-[8.5rem]">
+    <div className="min-w-[10rem] shrink-0">
       <Label htmlFor={id} className="sr-only">
         {label}
       </Label>
@@ -693,7 +693,9 @@ function BudgetsImportModal({
                           {formatCurrency(row.amount, row.currency)}
                         </td>
                         <td className="px-3 py-2">{row.currency}</td>
-                        <td className="px-3 py-2 tabular-nums">{row.plannedCourseStartDate}</td>
+                        <td className="px-3 py-2 tabular-nums">
+                          {row.plannedCourseStartDate || '—'}
+                        </td>
                         <td className="px-3 py-2 text-amber-800">
                           {row.isPotentialDuplicate
                             ? row.duplicateReasons.join('; ') || 'Potential duplicate'
@@ -775,7 +777,6 @@ export default function BudgetsPage() {
   const [budgetTab, setBudgetTab] = useState<BudgetEmploymentTab>('all');
   const [filterRegion, setFilterRegion] = useState('');
   const [filterDepartment, setFilterDepartment] = useState('');
-  const [filterCurrency, setFilterCurrency] = useState('');
   const [dateRangePreset, setDateRangePreset] = useState<BudgetDateRangePreset>('ytd');
   const [customRangeFrom, setCustomRangeFrom] = useState('');
   const [customRangeTo, setCustomRangeTo] = useState('');
@@ -908,16 +909,13 @@ export default function BudgetsPage() {
   const filterOptions = useMemo(() => {
     const regions = new Set<string>();
     const departments = new Set<string>();
-    const currencies = new Set<string>();
     for (const row of budgets) {
       if (row.region) regions.add(row.region);
       if (row.department) departments.add(row.department);
-      if (row.currency) currencies.add(row.currency);
     }
     return {
       regions: [...regions].sort((a, b) => a.localeCompare(b)),
       departments: [...departments].sort((a, b) => a.localeCompare(b)),
-      currencies: [...currencies].sort((a, b) => a.localeCompare(b)),
     };
   }, [budgets]);
 
@@ -929,10 +927,11 @@ export default function BudgetsPage() {
 
       if (filterRegion && row.region !== filterRegion) return false;
       if (filterDepartment && row.department !== filterDepartment) return false;
-      if (filterCurrency && row.currency !== filterCurrency) return false;
 
       if (!dateRangeError && !('error' in resolvedDateRange)) {
+        // Rows without a planned start date stay visible (date is optional on import).
         if (
+          row.plannedCourseStartDate &&
           !isoInInclusiveRange(
             row.plannedCourseStartDate,
             resolvedDateRange.from,
@@ -961,7 +960,6 @@ export default function BudgetsPage() {
     budgetTab,
     filterRegion,
     filterDepartment,
-    filterCurrency,
     dateRangeError,
     resolvedDateRange,
   ]);
@@ -1663,16 +1661,61 @@ export default function BudgetsPage() {
           avatarChar: (row) => getInitials(row.fullName),
         }}
         mobileExcludeFromGrid={['budgetCode', 'fullName']}
-        toolbar={
-          <div className="flex w-full flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-2">
+        headerContent={
+          <div className="@container/budget-header grid w-full grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-3">
+            <div className="col-start-1 row-start-1 min-w-0 @[960px]/budget-header:col-span-2">
+              <h3 className="text-[18px] font-semibold text-slate-950">Budgets</h3>
+              <p className="mt-1 text-sm text-slate-500">
+                Manage employee training budgets and planned development activities.
+              </p>
+            </div>
+
+            {canCreateBudgets ? (
+              <div className="col-start-2 row-start-1 flex shrink-0 items-start justify-end gap-2 self-start @[960px]/budget-header:row-start-2 @[960px]/budget-header:self-center">
+                <button
+                  type="button"
+                  onClick={openImportModal}
+                  disabled={!orgId}
+                  className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)] disabled:opacity-60"
+                >
+                  <UploadIcon className="h-4 w-4" />
+                  Import
+                </button>
+                <button
+                  type="button"
+                  onClick={openNewModal}
+                  disabled={!orgId}
+                  className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)] disabled:opacity-60"
+                >
+                  <PlusGlyph className="h-4 w-4" />
+                  New Budget
+                </button>
+              </div>
+            ) : null}
+
+            <div className="col-span-2 row-start-2 flex min-w-0 flex-wrap items-center gap-2 @[960px]/budget-header:col-span-1 @[960px]/budget-header:col-start-1 @[960px]/budget-header:row-start-2">
               <TableSearchInput
                 id="budget-search"
                 value={searchTerm}
                 onChange={setSearchTerm}
-                placeholder="Search budgets…"
+                placeholder="Search…"
+                containerClassName="w-[150px] max-w-full shrink-0"
               />
-              <div className="min-w-[10rem]">
+              <FilterSelect
+                id="budget-filter-region"
+                label="regions"
+                value={filterRegion}
+                onChange={setFilterRegion}
+                options={filterOptions.regions.map((r) => ({ value: r, label: r }))}
+              />
+              <FilterSelect
+                id="budget-filter-department"
+                label="departments"
+                value={filterDepartment}
+                onChange={setFilterDepartment}
+                options={filterOptions.departments.map((d) => ({ value: d, label: d }))}
+              />
+              <div className="min-w-[10rem] shrink-0">
                 <Label htmlFor="budget-date-range" className="sr-only">
                   Date range
                 </Label>
@@ -1694,7 +1737,7 @@ export default function BudgetsPage() {
               </div>
               {dateRangePreset === 'custom' ? (
                 <>
-                  <div className="min-w-[9rem]">
+                  <div className="min-w-[9rem] shrink-0">
                     <Label htmlFor="budget-custom-from" className="sr-only">
                       From
                     </Label>
@@ -1707,7 +1750,7 @@ export default function BudgetsPage() {
                       aria-label="From date"
                     />
                   </div>
-                  <div className="min-w-[9rem]">
+                  <div className="min-w-[9rem] shrink-0">
                     <Label htmlFor="budget-custom-to" className="sr-only">
                       To
                     </Label>
@@ -1722,58 +1765,12 @@ export default function BudgetsPage() {
                   </div>
                 </>
               ) : null}
-              <FilterSelect
-                id="budget-filter-region"
-                label="regions"
-                value={filterRegion}
-                onChange={setFilterRegion}
-                options={filterOptions.regions.map((r) => ({ value: r, label: r }))}
-              />
-              <FilterSelect
-                id="budget-filter-department"
-                label="departments"
-                value={filterDepartment}
-                onChange={setFilterDepartment}
-                options={filterOptions.departments.map((d) => ({ value: d, label: d }))}
-              />
-              <FilterSelect
-                id="budget-filter-currency"
-                label="currencies"
-                value={filterCurrency}
-                onChange={setFilterCurrency}
-                options={filterOptions.currencies.map((c) => ({ value: c, label: c }))}
-              />
             </div>
+
             {dateRangeError ? (
-              <p className="text-sm text-amber-800">{dateRangeError}</p>
+              <p className="col-span-2 text-sm text-amber-800">{dateRangeError}</p>
             ) : null}
           </div>
-        }
-        actions={
-          <>
-            {canCreateBudgets ? (
-              <>
-                <button
-                  type="button"
-                  onClick={openImportModal}
-                  disabled={!orgId}
-                  className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)] disabled:opacity-60"
-                >
-                  <UploadIcon className="h-4 w-4" />
-                  Import
-                </button>
-                <button
-                  type="button"
-                  onClick={openNewModal}
-                  disabled={!orgId}
-                  className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-[var(--primary)] px-3 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary-light)] disabled:opacity-60"
-                >
-                  <PlusGlyph className="h-4 w-4" />
-                  New Budget
-                </button>
-              </>
-            ) : null}
-          </>
         }
         renderCell={(row, key) => {
           if (key === 'fullName') {
@@ -1800,7 +1797,9 @@ export default function BudgetsPage() {
           if (key === 'plannedCourseStartDate') {
             return (
               <span className="text-[13px] text-slate-900">
-                {formatDisplayDate(row.plannedCourseStartDate)}
+                {row.plannedCourseStartDate
+                  ? formatDisplayDate(row.plannedCourseStartDate)
+                  : '—'}
               </span>
             );
           }

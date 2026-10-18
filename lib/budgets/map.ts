@@ -7,7 +7,7 @@ type BudgetListRow = {
   planned_course: string;
   initial_amount: number | string;
   currency: string;
-  planned_course_start_date: string;
+  planned_course_start_date: string | null;
   current_amount: number | string;
   remaining_amount: number | string;
   has_transactions: boolean;
@@ -53,7 +53,9 @@ export function mapBudgetListItem(
     plannedCourse: row.planned_course,
     initialAmount: toNumber(row.initial_amount),
     currency: row.currency,
-    plannedCourseStartDate: String(row.planned_course_start_date).slice(0, 10),
+    plannedCourseStartDate: row.planned_course_start_date
+      ? String(row.planned_course_start_date).slice(0, 10)
+      : '',
     currentAmount: toNumber(row.current_amount),
     remainingAmount: toNumber(row.remaining_amount),
     hasTransactions: Boolean(row.has_transactions),

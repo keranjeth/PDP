@@ -14,7 +14,8 @@ export type BudgetImportRecord = {
   plannedCourse: string;
   amount: number;
   currency: BudgetCurrency;
-  plannedCourseStartDate: string; // YYYY-MM-DD
+  /** YYYY-MM-DD when provided; empty string when omitted. */
+  plannedCourseStartDate: string;
   rowNumber: number;
 };
 
@@ -145,16 +146,12 @@ function parseRow(
   }
 
   let plannedCourseStartDate = '';
-  if (isBlankCell(dateRaw)) {
-    errors.push(`Row ${rowNumber}: Planned Course Start Date is required.`);
-  } else {
+  if (!isBlankCell(dateRaw)) {
     const parsed = parseImportDate(dateRaw);
     if (!parsed.ok) {
       errors.push(
-        `Row ${rowNumber}: ${
-          parsed.blank
-            ? 'Planned Course Start Date is required.'
-            : `Invalid Planned Course Start Date. ${parsed.message}`
+        `Row ${rowNumber}: Invalid Planned Course Start Date. ${
+          parsed.blank ? 'Use YYYY-MM-DD or leave blank.' : parsed.message
         }`
       );
     } else {
@@ -413,7 +410,7 @@ export function budgetDuplicateKey(parts: {
   return [
     parts.employeeIdNumber.trim().toLowerCase(),
     parts.plannedCourse.trim().toLowerCase().replace(/\s+/g, ' '),
-    parts.plannedCourseStartDate.slice(0, 10),
+    (parts.plannedCourseStartDate || '').slice(0, 10),
   ].join('|');
 }
 
@@ -429,7 +426,7 @@ export function budgetImportCanonicalPayload(records: BudgetImportRecord[]): str
         r.plannedCourse.trim().toLowerCase().replace(/\s+/g, ' '),
         Number(r.amount).toFixed(4),
         r.currency.toUpperCase(),
-        r.plannedCourseStartDate.slice(0, 10),
+        (r.plannedCourseStartDate || '').slice(0, 10),
       ].join('\t')
     )
     .join('\n');

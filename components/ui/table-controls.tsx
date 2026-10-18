@@ -7,14 +7,17 @@ export function TableSearchInput({
   value,
   onChange,
   placeholder,
+  containerClassName,
 }: {
   id: string;
   value: string;
   onChange: (next: string) => void;
   placeholder: string;
+  /** Optional width/layout classes. Defaults preserve the wide search used on other pages. */
+  containerClassName?: string;
 }) {
   return (
-    <div className="w-full max-w-full sm:max-w-[520px]">
+    <div className={containerClassName ?? 'w-full max-w-full sm:max-w-[520px]'}>
       <label className="sr-only" htmlFor={id}>
         {placeholder}
       </label>
