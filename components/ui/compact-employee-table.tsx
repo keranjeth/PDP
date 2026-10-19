@@ -11,7 +11,8 @@ export type CompactEmployeeSortKey =
   | 'fullName'
   | 'designation'
   | 'department'
-  | 'region';
+  | 'region'
+  | 'employmentStatus';
 
 type CompactEmployeeSortState = {
   key: CompactEmployeeSortKey;
@@ -685,6 +686,22 @@ export function CompactEmployeeTable<
       if (key === 'region') {
         return <span className="text-[13px] text-slate-900">{emp.region || '-'}</span>;
       }
+      if (key === 'employmentStatus') {
+        const status = emp.employmentStatus || '—';
+        return (
+          <span
+            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+              status === 'Active'
+                ? 'bg-[var(--primary-light)] text-[var(--primary)]'
+                : status === 'Inactive'
+                  ? 'bg-rose-50 text-rose-700'
+                  : 'bg-slate-50 text-slate-500'
+            }`}
+          >
+            {status}
+          </span>
+        );
+      }
       return <span className="text-[13px] text-slate-900">-</span>;
     });
 
@@ -715,6 +732,7 @@ export function CompactEmployeeTable<
     if (key === 'designation') return 'w-[180px]';
     if (key === 'department') return 'w-[150px]';
     if (key === 'region') return 'w-[120px]';
+    if (key === 'employmentStatus') return 'w-[110px]';
     if (key === 'actions') return 'w-[120px]';
     return '';
   };

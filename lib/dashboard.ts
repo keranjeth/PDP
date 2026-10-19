@@ -32,6 +32,7 @@ export type DashboardEmployeeRow = {
   region: string;
   currency: string;
   createdAt: Date;
+  employmentStatus: 'Active' | 'Inactive' | '';
 };
 
 export type DashboardAnalytics = {
@@ -173,6 +174,12 @@ export function buildEmployeeRows(employees: Employee[]): DashboardEmployeeRow[]
     region: employee.region ?? '',
     currency: '',
     createdAt: employee.createdAt,
+    employmentStatus:
+      employee.employmentStatus === 'Inactive'
+        ? 'Inactive'
+        : employee.employmentStatus === 'Active'
+          ? 'Active'
+          : '',
   }));
 }
 

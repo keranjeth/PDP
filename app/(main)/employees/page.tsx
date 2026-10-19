@@ -520,28 +520,71 @@ export default function EmployeesPage() {
 
   const filteredEmployeeRows = useMemo(() => {
     const query = searchTerm.trim().toLowerCase();
+    const isSearching = query.length > 0;
+
     const activeIdSet = new Set(
-      employees
-        .filter((e) => e.employmentStatus !== 'Inactive')
-        .map((e) => e.id)
+      employees.filter((e) => e.employmentStatus !== 'Inactive').map((e) => e.id)
     );
-    const baseRows =
-      employeeTab === 'leavers'
-        ? leaverRows
-        : employeeRows.filter((row) => activeIdSet.has(row.id));
-    if (!query) return baseRows;
-    return baseRows.filter(
-      (employee) =>
-        employee.fullName.toLowerCase().includes(query) ||
-        employee.idNumber.toLowerCase().includes(query) ||
-        employee.department.toLowerCase().includes(query) ||
-        employee.designation.toLowerCase().includes(query) ||
-        employee.region.toLowerCase().includes(query)
-    );
+    const activeRows = employeeRows
+      .filter((row) => activeIdSet.has(row.id))
+      .map((row) => ({ ...row, employmentStatus: 'Active' as const }));
+    const inactiveFromStore = employeeRows
+      .filter((row) => !activeIdSet.has(row.id))
+      .map((row) => ({ ...row, employmentStatus: 'Inactive' as const }));
+    const inactiveLeavers = leaverRows.map((row) => ({
+      ...row,
+      employmentStatus: 'Inactive' as const,
+    }));
+
+    let baseRows: DashboardEmployeeRow[];
+    if (isSearching) {
+      // Global search: Active + Inactive without switching tabs.
+      const byId = new Map<string, DashboardEmployeeRow>();
+      for (const row of [...activeRows, ...inactiveFromStore, ...inactiveLeavers]) {
+        if (!byId.has(row.id)) byId.set(row.id, row);
+      }
+      baseRows = [...byId.values()];
+    } else if (employeeTab === 'leavers') {
+      baseRows = inactiveLeavers;
+    } else {
+      baseRows = activeRows;
+    }
+
+    if (!isSearching) return baseRows;
+
+    const scored = baseRows
+      .map((employee) => {
+        const id = employee.idNumber.toLowerCase();
+        const name = employee.fullName.toLowerCase();
+        const department = employee.department.toLowerCase();
+        const designation = employee.designation.toLowerCase();
+        const region = employee.region.toLowerCase();
+        const status = employee.employmentStatus.toLowerCase();
+        const haystack = `${id} ${name} ${department} ${designation} ${region} ${status}`;
+        if (!haystack.includes(query)) return null;
+        let rank = 4;
+        if (id === query || name === query) rank = 0;
+        else if (id.startsWith(query) || name.startsWith(query)) rank = 1;
+        else if (id.includes(query) || name.includes(query)) rank = 2;
+        else if (status === query) rank = 3;
+        return { employee, rank };
+      })
+      .filter((item): item is { employee: DashboardEmployeeRow; rank: number } => item != null);
+
+    scored.sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return a.employee.fullName.localeCompare(b.employee.fullName, undefined, {
+        sensitivity: 'base',
+      });
+    });
+    return scored.map((item) => item.employee);
   }, [searchTerm, employeeRows, employees, employeeTab, leaverRows]);
 
+  const isEmployeeSearchActive = searchTerm.trim().length > 0;
+
+  // Prefetch leavers so global search can show Inactive employees immediately.
   useEffect(() => {
-    if (!isReady || !orgId || employeeTab !== 'leavers') {
+    if (!isReady || !orgId) {
       return;
     }
 
@@ -580,7 +623,7 @@ export default function EmployeesPage() {
     return () => {
       cancelled = true;
     };
-  }, [employeeTab, isReady, orgId]);
+  }, [isReady, orgId]);
 
   const now = new Date();
   const currentMonth = now.getMonth();
@@ -1224,11 +1267,19 @@ export default function EmployeesPage() {
           designation: row.designation,
           department: row.department,
           region: row.region,
+          employmentStatus: row.employmentStatus || '',
         })),
         {
-          fileName:
-            employeeTab === 'leavers' ? 'Employee-Leavers.xlsx' : 'Employee-Records.xlsx',
-          sheetName: employeeTab === 'leavers' ? 'Leavers' : 'Employee Records',
+          fileName: isEmployeeSearchActive
+            ? 'Employee-Search-Results.xlsx'
+            : employeeTab === 'leavers'
+              ? 'Employee-Leavers.xlsx'
+              : 'Employee-Records.xlsx',
+          sheetName: isEmployeeSearchActive
+            ? 'Search Results'
+            : employeeTab === 'leavers'
+              ? 'Leavers'
+              : 'Employee Records',
         }
       );
     } catch (error) {
@@ -1362,17 +1413,33 @@ export default function EmployeesPage() {
       ) : null}
 
       <CompactEmployeeTable
-        title={employeeTab === 'leavers' ? 'Leavers' : 'Employee Records'}
+        title={
+          isEmployeeSearchActive
+            ? 'Search results'
+            : employeeTab === 'leavers'
+              ? 'Leavers'
+              : 'Employee Records'
+        }
         description={
-          employeeTab === 'leavers'
-            ? 'Offboarded employees (snapshot preserved)'
-            : 'View and manage employee information.'
+          isEmployeeSearchActive
+            ? 'Matching Active and Inactive employees. Status is shown for each record.'
+            : employeeTab === 'leavers'
+              ? 'Offboarded employees (snapshot preserved)'
+              : 'View and manage employee information.'
         }
         rows={filteredEmployeeRows}
         emptyMessage="No employees found. Add your first employee or import a validated template to get started."
         sortable
         defaultSort={{ key: 'fullName', direction: 'asc' }}
         onDisplayRowsChange={handleDisplayRowsChange}
+        columnsOverride={[
+          { key: 'idNumber', label: 'ID NUMBER' },
+          { key: 'fullName', label: 'FULL NAME' },
+          { key: 'employmentStatus', label: 'STATUS' },
+          { key: 'designation', label: 'DESIGNATION' },
+          { key: 'department', label: 'DEPARTMENT' },
+          { key: 'region', label: 'REGION' },
+        ]}
         rowSelection={
           hardDeleteSelectMode && isSuperAdmin
             ? {
@@ -1380,7 +1447,10 @@ export default function EmployeesPage() {
                 onToggleRow: toggleHardDeleteRow,
                 onToggleAllVisible: toggleHardDeleteAllVisible,
               }
-            : employeeTab === 'active' && canUpdateEmployees && offboardSelectMode
+            : employeeTab === 'active' &&
+                canUpdateEmployees &&
+                offboardSelectMode &&
+                !isEmployeeSearchActive
               ? {
                   selectedIds: offboardSelectedIds,
                   onToggleRow: toggleOffboardRow,
@@ -1500,7 +1570,7 @@ export default function EmployeesPage() {
           </div>
         }
         renderDetailsCell={
-          employeeTab === 'active'
+          employeeTab === 'active' || isEmployeeSearchActive
             ? (row: DashboardEmployeeRow) => (
                 <div className="flex items-center justify-end gap-2">
                   <Link

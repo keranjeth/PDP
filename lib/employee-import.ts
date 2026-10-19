@@ -232,6 +232,7 @@ export type EmployeeTableExportRow = {
   designation: string;
   department: string;
   region: string;
+  employmentStatus?: string;
 };
 
 const SAMPLE_IMPORT_RECORD: EmployeeImportRecord = {
@@ -647,6 +648,7 @@ export async function downloadEmployeeRecordsExport(
   const headers = [
     'ID Number',
     'Full Name',
+    'Status',
     'Designation',
     'Department',
     'Region',
@@ -657,6 +659,7 @@ export async function downloadEmployeeRecordsExport(
     ws.addRow([
       String(row.idNumber ?? ''),
       String(row.fullName ?? ''),
+      String(row.employmentStatus ?? ''),
       String(row.designation ?? ''),
       String(row.department ?? ''),
       String(row.region ?? ''),
