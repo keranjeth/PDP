@@ -5,22 +5,24 @@ import {
   employeeToInsertRow,
   type EmployeeRow,
 } from '@/lib/supabase/employee-mapper';
+import { readAllPages } from '@/lib/supabase/read-all-pages';
 
 export async function fetchEmployeesFromSupabase(
   supabase: SupabaseClient,
   orgId: string
 ): Promise<Employee[]> {
-  const { data: empRows, error: empErr } = await supabase
-    .from('employees')
-    .select('*')
-    .eq('org_id', orgId)
-    .is('deleted_at', null);
+  // Paginate past PostgREST's default row cap so startup always gets the full org.
+  const empRows = await readAllPages<EmployeeRow>((from, to) =>
+    supabase
+      .from('employees')
+      .select('*')
+      .eq('org_id', orgId)
+      .is('deleted_at', null)
+      .order('id')
+      .range(from, to)
+  );
 
-  if (empErr) {
-    throw empErr;
-  }
-
-  return ((empRows ?? []) as EmployeeRow[]).map((row) => employeeRowToEmployee(row));
+  return empRows.map((row) => employeeRowToEmployee(row));
 }
 
 export type EmployeeRemoteSnapshot = {

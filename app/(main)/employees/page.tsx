@@ -559,6 +559,26 @@ export default function EmployeesPage() {
     return unsubscribe;
   }, [isReady, isEmployee, router]);
 
+  // If the store is still empty after auth is ready, fetch employees from Supabase
+  // immediately (covers cancelled background hydrate / first paint races).
+  useEffect(() => {
+    if (!isReady || !orgId || isEmployee) return;
+    if (payrollStore.getEmployees().length > 0) return;
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return;
+    let cancelled = false;
+    void hydrateEmployeesFromSupabase(supabase, orgId)
+      .then(() => {
+        if (!cancelled) loadEmployees();
+      })
+      .catch((err) => {
+        console.error('Employees page hydrate failed:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isReady, orgId, isEmployee]);
+
   const filteredEmployeeRows = useMemo(() => {
     const query = searchTerm.trim().toLowerCase();
     const isSearching = query.length > 0;

@@ -2,55 +2,69 @@ import { NextResponse } from 'next/server';
 import { requireBudgetApiAccess } from '@/lib/budgets/authz';
 import { mapBudgetListItem } from '@/lib/budgets/map';
 import type { BudgetListItem, CreateBudgetRequest } from '@/lib/budgets/types';
+import { readAllPages } from '@/lib/supabase/read-all-pages';
 
 function isIsoDateOnly(value: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
+
+const BUDGET_LIST_COLUMNS = [
+  'id',
+  'budget_code',
+  'employee_id',
+  'planned_course',
+  'initial_amount',
+  'currency',
+  'planned_course_start_date',
+  'current_amount',
+  'remaining_amount',
+  'has_transactions',
+  'employee_id_number',
+  'full_name',
+  'employment_status',
+  'region',
+  'duty_station',
+  'job_location',
+  'department',
+  'unit',
+  'designation',
+  'created_at',
+].join(',');
 
 export async function GET(request: Request) {
   const orgId = new URL(request.url).searchParams.get('orgId')?.trim() ?? '';
   const access = await requireBudgetApiAccess(request, orgId, 'read');
   if (!access.ok) return access.response;
 
-  // Employee fields come from the view join — avoid a second .in(id, …) lookup
-  // that exceeds PostgREST URL limits after large imports (~800+ UUIDs).
-  const { data: budgetRows, error: budgetErr } = await access.sessionClient
-    .from('v_employee_budget_list')
-    .select(
-      [
-        'id',
-        'budget_code',
-        'employee_id',
-        'planned_course',
-        'initial_amount',
-        'currency',
-        'planned_course_start_date',
-        'current_amount',
-        'remaining_amount',
-        'has_transactions',
-        'employee_id_number',
-        'full_name',
-        'employment_status',
-        'region',
-        'duty_station',
-        'job_location',
-        'department',
-        'unit',
-        'designation',
-      ].join(',')
-    )
-    .eq('org_id', orgId)
-    .order('created_at', { ascending: false });
+  try {
+    // Paginate past PostgREST row caps; employee fields come from the view join.
+    const budgetRows = await readAllPages((from, to) =>
+      access.sessionClient
+        .from('v_employee_budget_list')
+        .select(BUDGET_LIST_COLUMNS)
+        .eq('org_id', orgId)
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: true })
+        .range(from, to)
+    );
 
-  if (budgetErr) {
-    return NextResponse.json({ error: budgetErr.message }, { status: 400 });
+    const budgets: BudgetListItem[] = (
+      budgetRows as unknown as Array<Parameters<typeof mapBudgetListItem>[0]>
+    ).map((row) => mapBudgetListItem(row));
+
+    return NextResponse.json(
+      { budgets },
+      { headers: { 'Cache-Control': 'private, no-store' } }
+    );
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error ? error.message : 'Unable to load budgets.',
+      },
+      { status: 400 }
+    );
   }
-
-  const budgets: BudgetListItem[] = (
-    (budgetRows ?? []) as Array<Parameters<typeof mapBudgetListItem>[0]>
-  ).map((row) => mapBudgetListItem(row));
-
-  return NextResponse.json({ budgets });
 }
 
 export async function POST(request: Request) {

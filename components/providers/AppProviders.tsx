@@ -138,6 +138,22 @@ export function AppProviders({ children }: { children: ReactNode }) {
         nextToken === appliedAccessTokenRef.current &&
         event !== 'SIGNED_IN'
       ) {
+        // Same session token — still top up the employee store if it is empty
+        // (e.g. a prior hydrate was cancelled by Strict Mode remount).
+        if (orgId) {
+          const oid = orgId;
+          void import('@/lib/employee-remote-sync')
+            .then(({ hydrateEmployeesFromSupabase }) =>
+              hydrateEmployeesFromSupabase(supabase, oid)
+            )
+            .catch((hydrateErr) =>
+              console.error(
+                'Employee re-hydrate failed:',
+                formatSupabaseError(hydrateErr),
+                hydrateErr
+              )
+            );
+        }
         setIsReady(true);
         return;
       }
@@ -217,13 +233,17 @@ export function AppProviders({ children }: { children: ReactNode }) {
             setMemberRegions([]);
           }
 
-          void hydrateEmployeesFromSupabase(supabase, oid).catch((hydrateErr) =>
+          // Await hydrate so pages that read the employee store on isReady
+          // see Supabase data immediately (not after a later silent background fill).
+          try {
+            await hydrateEmployeesFromSupabase(supabase, oid);
+          } catch (hydrateErr) {
             console.error(
               'Employee hydrate failed:',
               formatSupabaseError(hydrateErr),
               hydrateErr
-            )
-          );
+            );
+          }
         } catch (err) {
           console.error('Workspace hydration failed:', formatSupabaseError(err), err);
           const message = String(err instanceof Error ? err.message : err).toLowerCase();
@@ -292,6 +312,10 @@ export function AppProviders({ children }: { children: ReactNode }) {
 
     return () => {
       cancelled = true;
+      // Allow React Strict Mode remount / effect re-run to hydrate again.
+      // Without this, the second mount sees the same access token and skips
+      // workspace + employee loading, leaving an empty UI until a hard refresh.
+      appliedAccessTokenRef.current = null;
       subscriptionHolder.subscription.unsubscribe();
     };
   }, [supabase, router]);
