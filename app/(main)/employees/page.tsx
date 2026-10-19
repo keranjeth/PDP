@@ -46,7 +46,11 @@ function employeeRecordsForApi(records: EmployeeImportRecord[]) {
 
 type PendingImport = {
   fileName: string;
+  /** All validated rows from the file. */
   records: EmployeeImportRecord[];
+  /** Missing employees only (existing IDs excluded after preview). */
+  recordsToImport: EmployeeImportRecord[];
+  existingCount: number;
   skippedSampleRow: boolean;
 };
 
@@ -61,7 +65,9 @@ type ImportProgress = {
 
 const TEMPLATE_DOWNLOAD_TOAST_MS = 4000;
 const IMPORT_SUCCESS_TOAST_MS = 30000;
-const IMPORT_BATCH_SIZE = 250;
+/** Larger batches for employee-row upserts (Auth provisioning runs separately). */
+const IMPORT_BATCH_SIZE = 500;
+const PROVISION_BATCH_SIZE = 40;
 
 function calculateChange(currentValue: number, previousValue: number) {
   if (!Number.isFinite(currentValue) || !Number.isFinite(previousValue)) {
@@ -279,7 +285,9 @@ function EmployeesImportModal({
 
           <div className="text-center">
             <p className="text-[22px] font-semibold text-slate-950">Importing employees</p>
-            <p className="mt-2 text-[15px] text-slate-500">Progress is being tracked row by row.</p>
+            <p className="mt-2 text-[15px] text-slate-500">
+              Saving employee records in bulk…
+            </p>
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 sm:px-6 sm:py-5">
@@ -310,7 +318,10 @@ function EmployeesImportModal({
                 </span>
               </span>
               <span>
-                {importProgress.created} created, {importProgress.updated} updated
+                {importProgress.created} created
+                {importProgress.updated > 0
+                  ? `, ${importProgress.updated} already existed (skipped)`
+                  : ''}
               </span>
             </div>
           </div>
@@ -368,13 +379,27 @@ function EmployeesImportModal({
             />
           ) : null}
 
+          {isValidatingImport && !pendingEmployeeImport ? (
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-5 py-4">
+              <p className="text-sm font-medium text-slate-800">Validating file…</p>
+              <p className="mt-1 text-sm text-slate-600">
+                Checking spreadsheet columns and preparing a one-step import.
+              </p>
+            </div>
+          ) : null}
+
           {pendingEmployeeImport ? (
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <p className="text-sm font-medium text-emerald-900">Ready to import</p>
                   <p className="mt-1 text-sm text-emerald-800">
-                    {pendingEmployeeImport.records.length} employee rows validated successfully.
+                    {pendingEmployeeImport.records.length} employee row
+                    {pendingEmployeeImport.records.length === 1 ? '' : 's'} validated
+                    {pendingEmployeeImport.existingCount > 0
+                      ? ` · ${pendingEmployeeImport.existingCount} already in the system (will be skipped)`
+                      : ''}
+                    .
                   </p>
                   {pendingEmployeeImport.skippedSampleRow ? (
                     <p className="mt-2 text-sm text-emerald-700">
@@ -383,15 +408,31 @@ function EmployeesImportModal({
                   ) : null}
                   {employeePreview ? (
                     <p className="mt-2 text-sm text-emerald-900">{employeePreview}</p>
-                  ) : null}
+                  ) : (
+                    <p className="mt-2 text-sm text-emerald-800">
+                      Only missing employees are imported. Login accounts are created afterward in
+                      the background.
+                    </p>
+                  )}
                 </div>
 
                 <Button
                   type="button"
                   className="w-full !rounded-xl !bg-[var(--primary)] px-5 py-2.5 !text-sm font-semibold hover:!bg-[var(--primary-hover)] sm:w-auto"
                   onClick={onImportEmployees}
+                  disabled={
+                    isValidatingImport ||
+                    isImporting ||
+                    pendingEmployeeImport.recordsToImport.length === 0
+                  }
                 >
-                  {employeePreview ? 'Confirm Import' : 'Review Import'}
+                  {isImporting
+                    ? 'Importing…'
+                    : pendingEmployeeImport.recordsToImport.length === 0
+                      ? 'Nothing new to import'
+                      : `Import ${pendingEmployeeImport.recordsToImport.length} new record${
+                          pendingEmployeeImport.recordsToImport.length === 1 ? '' : 's'
+                        }`}
                 </Button>
               </div>
             </div>
@@ -1015,12 +1056,65 @@ export default function EmployeesPage() {
         return;
       }
 
-      setStagedEmployeeFileName(null);
-      setPendingImport({
+      const pending: PendingImport = {
         fileName: result.fileName,
         records: result.records,
+        recordsToImport: result.records,
+        existingCount: 0,
         skippedSampleRow: result.skippedSampleRow,
-      });
+      };
+      setStagedEmployeeFileName(null);
+
+      // Auto-preview: detect existing Employee IDs so import skips them.
+      if (orgId) {
+        try {
+          const res = await fetch('/api/employees/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              orgId,
+              records: employeeRecordsForApi(pending.records),
+              preview: true,
+            }),
+          });
+          const payload = (await res.json().catch(() => null)) as {
+            error?: string;
+            total?: number;
+            newRecords?: number;
+            existingRecords?: number;
+            newIdNumbers?: string[];
+          } | null;
+          if (res.ok) {
+            const newIdSet = new Set(
+              (payload?.newIdNumbers ?? []).map((id) => String(id).trim().toLowerCase())
+            );
+            const recordsToImport =
+              newIdSet.size > 0 || (payload?.newRecords ?? 0) === 0
+                ? pending.records.filter((r) =>
+                    newIdSet.has(String(r.idNumber ?? '').trim().toLowerCase())
+                  )
+                : pending.records;
+            const existingCount = Number(
+              payload?.existingRecords ?? pending.records.length - recordsToImport.length
+            );
+            setPendingImport({
+              ...pending,
+              recordsToImport,
+              existingCount,
+            });
+            setEmployeePreviewText(
+              `${payload?.total ?? pending.records.length} in file · ${
+                recordsToImport.length
+              } new to import · ${existingCount} already exist (skipped).`
+            );
+            return;
+          }
+        } catch {
+          // Preview is optional; import API still skips existing rows.
+        }
+      }
+
+      setPendingImport(pending);
     } catch (error) {
       console.error('Error validating import file:', error);
       setImportErrors([
@@ -1039,58 +1133,87 @@ export default function EmployeesPage() {
     event.target.value = '';
   };
 
+  const provisionAccountsInBackground = (idNumbers: string[]) => {
+    if (!orgId || !isSuperAdmin || idNumbers.length === 0) return;
+
+    void (async () => {
+      let offset = 0;
+      let created = 0;
+      let skipped = 0;
+      let failed = 0;
+      while (offset < idNumbers.length) {
+        try {
+          const res = await fetch('/api/employees/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              orgId,
+              provisionOnly: true,
+              idNumbers,
+              provisionOffset: offset,
+              provisionBatchSize: PROVISION_BATCH_SIZE,
+            }),
+          });
+          const payload = (await res.json().catch(() => null)) as {
+            usersCreated?: number;
+            usersSkipped?: number;
+            usersFailed?: number;
+            provisionNextOffset?: number;
+            provisionHasMore?: boolean;
+            error?: string;
+          } | null;
+          if (!res.ok) {
+            console.error('Background account provisioning failed:', payload?.error);
+            break;
+          }
+          created += Number(payload?.usersCreated ?? 0);
+          skipped += Number(payload?.usersSkipped ?? 0);
+          failed += Number(payload?.usersFailed ?? 0);
+          offset = Number(payload?.provisionNextOffset ?? offset + PROVISION_BATCH_SIZE);
+          if (!payload?.provisionHasMore) break;
+        } catch (err) {
+          console.error('Background account provisioning error:', err);
+          break;
+        }
+      }
+      console.info(
+        `Account provisioning finished: ${created} created, ${skipped} skipped, ${failed} failed.`
+      );
+    })();
+  };
+
   const handleImportEmployees = async () => {
-    if (!pendingImport) {
+    if (!pendingImport || isImporting) {
       return;
     }
 
-    if (!employeePreviewText) {
-      setIsValidatingImport(true);
-      try {
-        const res = await fetch('/api/employees/import', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            orgId,
-            records: employeeRecordsForApi(pendingImport.records),
-            preview: true,
-          }),
-        });
-        const payload = (await res.json().catch(() => null)) as {
-          error?: string;
-          total?: number;
-          newRecords?: number;
-          existingRecords?: number;
-        } | null;
-        if (!res.ok) {
-          setImportErrors([payload?.error || 'Preview failed.']);
-          return;
-        }
-        setEmployeePreviewText(
-          `${payload?.total ?? pendingImport.records.length} records, ${payload?.newRecords ?? 0} new, ${payload?.existingRecords ?? 0} existing. Blank optional cells keep the current values.`
-        );
-      } finally {
-        setIsValidatingImport(false);
-      }
+    const rowsToImport = pendingImport.recordsToImport;
+    if (rowsToImport.length === 0) {
+      setImportErrors([
+        pendingImport.existingCount > 0
+          ? 'All employees in this file already exist. Nothing new to import.'
+          : 'No employees to import.',
+      ]);
       return;
     }
 
     setIsImporting(true);
     setImportErrors([]);
 
-    const total = pendingImport.records.length;
+    const total = rowsToImport.length;
     let committedRows = 0;
     let committedInserted = 0;
     let committedSkipped = 0;
+    const provisionIdNumbers: string[] = [];
     const rlsSkippedSample: Array<{ idNumber: string; reason: string }> = [];
 
     setImportProgress({
-      processed: 0, // confirmed rows written/skipped by the API
+      processed: 0,
       total,
       percentage: 0,
-      created: 0, // reused as "inserted" (confirmed)
-      updated: 0, // reused as "skipped" (confirmed)
-      currentName: 'Waiting for database...',
+      created: 0,
+      updated: pendingImport.existingCount,
+      currentName: 'Saving new employee records…',
     });
 
     try {
@@ -1098,8 +1221,8 @@ export default function EmployeesPage() {
         throw new Error('Workspace not ready.');
       }
 
-      for (let i = 0; i < pendingImport.records.length; i += IMPORT_BATCH_SIZE) {
-        const batch = pendingImport.records.slice(i, i + IMPORT_BATCH_SIZE);
+      for (let i = 0; i < rowsToImport.length; i += IMPORT_BATCH_SIZE) {
+        const batch = rowsToImport.slice(i, i + IMPORT_BATCH_SIZE);
 
         setImportProgress((prev) => ({
           processed: prev?.processed ?? 0,
@@ -1110,13 +1233,17 @@ export default function EmployeesPage() {
           currentName: `Saving ${Math.min(i + 1, total)}–${Math.min(
             i + batch.length,
             total
-          )} to database...`,
+          )} new employees…`,
         }));
 
         const res = await fetch('/api/employees/import', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ orgId, records: employeeRecordsForApi(batch) }),
+          body: JSON.stringify({
+            orgId,
+            records: employeeRecordsForApi(batch),
+            provisionAccounts: false,
+          }),
         });
 
         if (!res.ok) {
@@ -1131,17 +1258,22 @@ export default function EmployeesPage() {
               ok?: boolean;
               imported?: number;
               skipped?: number;
+              skippedExisting?: number;
               rlsSkipped?: Array<{ idNumber: string; reason: string }>;
+              provisionIdNumbers?: string[];
             }
           | null;
 
         const imported = Number(payload?.imported ?? 0);
-        const skipped = Number(payload?.skipped ?? 0);
+        const skippedExisting = Number(payload?.skippedExisting ?? 0);
         const rlsSkipped = payload?.rlsSkipped ?? [];
 
         committedInserted += imported;
-        committedSkipped += skipped;
-        committedRows += imported + skipped;
+        committedSkipped += skippedExisting;
+        committedRows += batch.length;
+        if (Array.isArray(payload?.provisionIdNumbers)) {
+          provisionIdNumbers.push(...payload.provisionIdNumbers);
+        }
 
         for (const s of rlsSkippedSample.length < 10 ? rlsSkipped : []) {
           if (rlsSkippedSample.length >= 10) break;
@@ -1156,14 +1288,19 @@ export default function EmployeesPage() {
           updated: committedSkipped,
           currentName:
             imported > 0
-              ? `Inserted ${imported} rows`
-              : skipped > 0
-                ? `Skipped ${skipped} rows`
+              ? `Saved ${imported} new employees`
+              : skippedExisting > 0
+                ? `Skipped ${skippedExisting} existing employees`
                 : 'No rows inserted (check permissions)',
         });
       }
 
       if (committedInserted === 0) {
+        if (committedSkipped > 0 || pendingImport.existingCount > 0) {
+          throw new Error(
+            'All employees in this file already exist. Nothing new to import.'
+          );
+        }
         const sample =
           rlsSkippedSample.length > 0
             ? `\n\nSample RLS blocks:\n${rlsSkippedSample
@@ -1174,7 +1311,6 @@ export default function EmployeesPage() {
         throw new Error(`No employees were inserted into the database.${sample}`);
       }
 
-      // Close the modal immediately after the final DB batch commit.
       setIsImporting(false);
       setIsImportModalOpen(false);
       resetImportState();
@@ -1187,7 +1323,7 @@ export default function EmployeesPage() {
         importSuccessToastTimerRef.current = null;
       }, IMPORT_SUCCESS_TOAST_MS);
 
-      // Re-hydrate in the background (prevents the UI from looking "stuck" at 100%).
+      // Re-hydrate list immediately; provision Auth accounts in the background.
       void (async () => {
         try {
           const supabaseClient = (await import('@/lib/supabase/client'))
@@ -1200,6 +1336,8 @@ export default function EmployeesPage() {
           console.error('Post-import hydration failed:', err);
         }
       })();
+
+      provisionAccountsInBackground([...new Set(provisionIdNumbers)]);
     } catch (error) {
       console.error('Error importing employees:', error);
       setIsImporting(false);
@@ -1323,7 +1461,7 @@ export default function EmployeesPage() {
           aria-live="polite"
         >
           <p className="flex-1 pt-0.5 text-sm font-medium text-emerald-900">
-            Import completed successfully.
+            Employee records imported. Login accounts continue in the background when needed.
           </p>
           <button
             type="button"

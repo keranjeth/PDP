@@ -12,16 +12,26 @@ import { normalizeSeparationExitType } from '@/lib/separation';
 
 type ImportRequestBody = {
   orgId: string;
-  records: EmployeeImportRecord[];
-  /** Resumable account provisioning: process at most this many ids per request (default 75). */
+  records?: EmployeeImportRecord[];
+  /** When true, only provision login accounts for the given idNumbers (no employee upsert). */
+  provisionOnly?: boolean;
+  /** Employee IDs to provision when provisionOnly is true. */
+  idNumbers?: string[];
+  /**
+   * When false (default), import employee rows only — much faster.
+   * Auth account creation is deferred to a separate provisionOnly request.
+   */
+  provisionAccounts?: boolean;
+  /** Resumable account provisioning: process at most this many ids per request (default 40). */
   provisionBatchSize?: number;
   /** Skip this many imported ids before provisioning (for safe retries / large imports). */
   provisionOffset?: number;
   preview?: boolean;
 };
 
-const DEFAULT_PROVISION_BATCH = 75;
-const MAX_PROVISION_BATCH = 150;
+const DEFAULT_PROVISION_BATCH = 40;
+const MAX_PROVISION_BATCH = 80;
+const INACTIVE_RPC_CONCURRENCY = 12;
 
 type EmployeeImportDbRow = {
   org_id: string;
@@ -189,7 +199,8 @@ async function provisionEmployeeAccountsReliable(params: {
     }
   }
 
-  const limit = createConcurrencyLimiter(8);
+  // Auth Admin API is single-user; keep concurrency modest to avoid rate limits.
+  const limit = createConcurrencyLimiter(6);
   await Promise.all(
     uniqueIds.map((employeeId) =>
       limit(async () => {
@@ -225,6 +236,63 @@ async function provisionEmployeeAccountsReliable(params: {
   );
 
   return summary;
+}
+
+async function importInactiveRowsConcurrently(
+  adminDb: SupabaseClient,
+  orgId: string,
+  importedBy: string,
+  inactiveRows: EmployeeImportDbRow[]
+): Promise<{ imported: number; error: string | null }> {
+  if (inactiveRows.length === 0) return { imported: 0, error: null };
+
+  const limit = createConcurrencyLimiter(INACTIVE_RPC_CONCURRENCY);
+  let imported = 0;
+  let firstError: string | null = null;
+
+  await Promise.all(
+    inactiveRows.map((row) =>
+      limit(async () => {
+        if (firstError) return;
+        const { error: rpcErr } = await adminDb.rpc('import_separated_employee', {
+          p_org_id: orgId,
+          p_imported_by: importedBy,
+          p_id_number: row.id_number,
+          p_full_name: row.full_name,
+          p_gender: row.gender,
+          p_date_of_birth: row.date_of_birth,
+          p_position_number: row.position_number,
+          p_reports_to_position_number: row.reports_to_position_number,
+          p_designation: row.designation,
+          p_staffing_category: row.staffing_category,
+          p_department: row.department,
+          p_unit: row.unit,
+          p_region: row.region,
+          p_duty_station: row.duty_station,
+          p_job_location: row.job_location,
+          p_contract_type: row.contract_type,
+          p_job_status: row.job_status,
+          p_joining_date: row.joining_date,
+          p_contract_start_date: row.contract_start_date,
+          p_contract_end_date: row.contract_end_date,
+          p_last_working_date: row.last_working_date,
+          p_exit_type: row.separation_type,
+          p_leaving_reason: row.separation_reason,
+        });
+        if (rpcErr) {
+          if (!firstError) {
+            firstError = `Employee ID ${row.id_number}: ${
+              rpcErr.message || 'Inactive employee import failed.'
+            }`;
+          }
+          return;
+        }
+        imported += 1;
+      })
+    )
+  );
+
+  return { imported, error: firstError };
 }
 
 function isRecordArray(value: unknown): value is EmployeeImportRecord[] {
@@ -289,21 +357,6 @@ function importRecordToDbRow(orgId: string, r: EmployeeImportRecord): EmployeeIm
     last_working_date: toDateOnly(r.lastWorkingDate),
   };
 }
-
-const PRESERVE_WHEN_BLANK = [
-  'date_of_birth',
-  'position_number',
-  'reports_to_position_number',
-  'staffing_category',
-  'unit',
-  'region',
-  'duty_station',
-  'job_location',
-  'contract_type',
-  'job_status',
-  'contract_start_date',
-  'contract_end_date',
-] as const;
 
 function validateImportRows(rows: EmployeeImportDbRow[]): string[] {
   const errors: string[] = [];
@@ -414,22 +467,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'orgId is required.' }, { status: 400 });
   }
 
-  if (!isRecordArray(body.records) || body.records.length === 0) {
-    return NextResponse.json(
-      { error: 'records must be a non-empty array.' },
-      { status: 400 }
-    );
-  }
-
-  const rows = body.records.map((r) => importRecordToDbRow(body!.orgId, r));
-  const validationErrors = validateImportRows(rows);
-  if (validationErrors.length > 0) {
-    return NextResponse.json(
-      { error: validationErrors[0], errors: validationErrors.slice(0, 50) },
-      { status: 400 }
-    );
-  }
-
   const { data: membership, error: memErr } = await supabase
     .from('organization_members')
     .select('role,status')
@@ -447,12 +484,83 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Inactive user.' }, { status: 403 });
   }
 
-  let allowedRows = rows;
-  let skipped = 0;
-
   if (role === 'employee') {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
+
+  if (!secretKey) {
+    return NextResponse.json(
+      {
+        error:
+          'Server is missing SUPABASE_SECRET_KEY. Employee import cannot run safely.',
+      },
+      { status: 500 }
+    );
+  }
+
+  const isSuperAdmin = status === 'active' && role === 'super_admin';
+
+  // Fast path: provision login accounts after employee rows already exist.
+  if (body.provisionOnly) {
+    if (!isSuperAdmin) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+    const idNumbers = Array.isArray(body.idNumbers)
+      ? body.idNumbers.map((id) => String(id ?? '').trim()).filter(Boolean)
+      : [];
+    if (idNumbers.length === 0) {
+      return NextResponse.json(
+        { error: 'idNumbers must be a non-empty array for provisionOnly.' },
+        { status: 400 }
+      );
+    }
+    const batchSize = Math.min(
+      MAX_PROVISION_BATCH,
+      Math.max(1, Number(body.provisionBatchSize) || DEFAULT_PROVISION_BATCH)
+    );
+    const offset = Math.max(0, Number(body.provisionOffset) || 0);
+    const batchIds = idNumbers.slice(offset, offset + batchSize);
+    const nextOffset = offset + batchIds.length;
+    const hasMore = nextOffset < idNumbers.length;
+    const provision = await provisionEmployeeAccountsReliable({
+      orgId: body.orgId,
+      idNumbers: batchIds,
+    });
+    return NextResponse.json({
+      ok: true,
+      imported: 0,
+      skipped: 0,
+      usersCreated: provision.created,
+      usersSkipped: provision.skipped,
+      usersFailed: provision.failed,
+      userFailures: provision.failures.slice(0, 50),
+      userProvisioning: hasMore ? 'partial' : 'completed',
+      provisionTotal: idNumbers.length,
+      provisionOffset: offset,
+      provisionNextOffset: nextOffset,
+      provisionHasMore: hasMore,
+      provisionBatchSize: batchSize,
+    });
+  }
+
+  if (!isRecordArray(body.records) || body.records.length === 0) {
+    return NextResponse.json(
+      { error: 'records must be a non-empty array.' },
+      { status: 400 }
+    );
+  }
+
+  const rows = body.records.map((r) => importRecordToDbRow(body!.orgId, r));
+  const validationErrors = validateImportRows(rows);
+  if (validationErrors.length > 0) {
+    return NextResponse.json(
+      { error: validationErrors[0], errors: validationErrors.slice(0, 50) },
+      { status: 400 }
+    );
+  }
+
+  let allowedRows = rows;
+  let skipped = 0;
 
   if (role === 'hr_national') {
     const next = rows.filter((r) => r.staffing_category !== 'Senior Management');
@@ -494,28 +602,15 @@ export async function POST(request: Request) {
     });
   }
 
-  if (!secretKey) {
-    return NextResponse.json(
-      {
-        error:
-          'Server is missing SUPABASE_SECRET_KEY. Employee import cannot run safely.',
-      },
-      { status: 500 }
-    );
-  }
-
   const adminDb = getSupabaseAdminClient();
 
-  const existingByIdNumber = new Map<
-    string,
-    Record<string, unknown> & { employment_status?: string | null }
-  >();
+  const existingIdNumbers = new Set<string>();
   const idNumbers = allowedRows.map((row) => row.id_number);
   for (let i = 0; i < idNumbers.length; i += 200) {
     const chunk = idNumbers.slice(i, i + 200);
     const { data: existingRows, error: existingErr } = await adminDb
       .from('employees')
-      .select(['id_number', 'employment_status', ...PRESERVE_WHEN_BLANK].join(','))
+      .select('id_number')
       .eq('org_id', body.orgId)
       .in('id_number', chunk);
     if (existingErr) {
@@ -524,63 +619,47 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
-    for (const existing of (existingRows ?? []) as unknown as Array<
-      Record<string, unknown> & { employment_status?: string | null }
-    >) {
-      existingByIdNumber.set(String(existing.id_number).toLowerCase(), existing);
+    for (const existing of existingRows ?? []) {
+      existingIdNumbers.add(String((existing as { id_number: string }).id_number).toLowerCase());
     }
   }
 
-  const conflictErrors: string[] = [];
-  for (const row of allowedRows) {
-    const existing = existingByIdNumber.get(row.id_number.toLowerCase());
-    if (!existing) continue;
-    const existingStatus = String(existing.employment_status ?? '');
-    if (existingStatus === 'active' && row.employment_status === 'inactive') {
-      conflictErrors.push(
-        `Employee ID ${row.id_number} already exists with Active status. Review before changing status.`
-      );
-    } else if (existingStatus === 'inactive' && row.employment_status === 'active') {
-      conflictErrors.push(
-        `Employee ID ${row.id_number} already exists with Inactive status. Review before changing status.`
-      );
-    }
-  }
-
-  if (conflictErrors.length > 0) {
-    return NextResponse.json(
-      { error: conflictErrors[0], errors: conflictErrors.slice(0, 50) },
-      { status: 400 }
-    );
-  }
-
-  let updatedExisting = 0;
-  for (const row of allowedRows) {
-    const existing = existingByIdNumber.get(row.id_number.toLowerCase());
-    if (!existing) continue;
-    updatedExisting += 1;
-    if (row.employment_status === 'active') {
-      for (const key of PRESERVE_WHEN_BLANK) {
-        if (row[key] == null || row[key] === '') {
-          (row as Record<string, unknown>)[key] = existing[key] ?? null;
-        }
-      }
-    }
-  }
+  // Existing Employee IDs are ignored — import only missing records.
+  const newRows = allowedRows.filter(
+    (row) => !existingIdNumbers.has(row.id_number.toLowerCase())
+  );
+  const skippedExisting = allowedRows.length - newRows.length;
 
   if (body.preview) {
     return NextResponse.json({
       ok: true,
       total: allowedRows.length,
-      newRecords: allowedRows.length - updatedExisting,
-      existingRecords: updatedExisting,
-      activeRecords: allowedRows.filter((r) => r.employment_status === 'active').length,
-      inactiveRecords: allowedRows.filter((r) => r.employment_status === 'inactive').length,
+      newRecords: newRows.length,
+      existingRecords: skippedExisting,
+      newIdNumbers: newRows.map((r) => r.id_number),
+      activeRecords: newRows.filter((r) => r.employment_status === 'active').length,
+      inactiveRecords: newRows.filter((r) => r.employment_status === 'inactive').length,
     });
   }
 
-  const activeRows = allowedRows.filter((r) => r.employment_status === 'active');
-  const inactiveRows = allowedRows.filter((r) => r.employment_status === 'inactive');
+  if (newRows.length === 0) {
+    return NextResponse.json({
+      ok: true,
+      imported: 0,
+      skipped: skipped + skippedExisting,
+      skippedExisting,
+      rlsSkipped: [],
+      usersCreated: 0,
+      usersSkipped: 0,
+      usersFailed: 0,
+      userProvisioning: 'not_needed',
+      provisionIdNumbers: [],
+      message: 'All employees in this file already exist. Nothing new to import.',
+    });
+  }
+
+  const activeRows = newRows.filter((r) => r.employment_status === 'active');
+  const inactiveRows = newRows.filter((r) => r.employment_status === 'inactive');
 
   const rlsSkipped: Array<{ idNumber: string; reason: string }> = [];
   let imported = 0;
@@ -624,39 +703,19 @@ export async function POST(request: Request) {
     }
   }
 
-  // Inactive employees: atomic employee + leaver via historical-import RPC.
-  // Fail the request if any inactive row cannot be saved cleanly.
-  for (const row of inactiveRows) {
-    const { error: rpcErr } = await adminDb.rpc('import_separated_employee', {
-      p_org_id: body.orgId,
-      p_imported_by: user.id,
-      p_id_number: row.id_number,
-      p_full_name: row.full_name,
-      p_gender: row.gender,
-      p_date_of_birth: row.date_of_birth,
-      p_position_number: row.position_number,
-      p_reports_to_position_number: row.reports_to_position_number,
-      p_designation: row.designation,
-      p_staffing_category: row.staffing_category,
-      p_department: row.department,
-      p_unit: row.unit,
-      p_region: row.region,
-      p_duty_station: row.duty_station,
-      p_job_location: row.job_location,
-      p_contract_type: row.contract_type,
-      p_job_status: row.job_status,
-      p_joining_date: row.joining_date,
-      p_contract_start_date: row.contract_start_date,
-      p_contract_end_date: row.contract_end_date,
-      p_last_working_date: row.last_working_date,
-      p_exit_type: row.separation_type,
-      p_leaving_reason: row.separation_reason,
-    });
-
-    if (rpcErr) {
+  // Inactive employees: atomic employee + leaver via historical-import RPC (parallel).
+  if (inactiveRows.length > 0) {
+    const inactiveResult = await importInactiveRowsConcurrently(
+      adminDb,
+      body.orgId,
+      user.id,
+      inactiveRows
+    );
+    imported += inactiveResult.imported;
+    if (inactiveResult.error) {
       return NextResponse.json(
         {
-          error: `Employee ID ${row.id_number}: ${rpcErr.message || 'Inactive employee import failed.'}`,
+          error: inactiveResult.error,
           imported,
           skipped: skipped + rlsSkipped.length,
           rlsSkipped,
@@ -664,47 +723,54 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
-    imported += 1;
   }
 
-  const isSuperAdmin = status === 'active' && role === 'super_admin';
-
-  if (!isSuperAdmin) {
-    return NextResponse.json({
-      ok: true,
-      imported,
-      skipped: skipped + rlsSkipped.length,
-      rlsSkipped,
-      usersCreated: 0,
-      usersSkipped: 0,
-      usersFailed: 0,
-      userProvisioning: 'not_authorized',
-    });
-  }
-
-  // Provision login accounts only for Active imports — never for former employees.
   const importedActiveIdNumbers = activeRows
     .filter((r) => !rlsSkipped.find((s) => s.idNumber === r.id_number))
     .map((r) => r.id_number);
 
+  // Default: skip Auth provisioning in the import request (was the multi-minute bottleneck).
+  const shouldProvisionInline = Boolean(body.provisionAccounts) && isSuperAdmin;
+
+  if (!shouldProvisionInline) {
+    return NextResponse.json({
+      ok: true,
+      imported,
+      skipped: skipped + skippedExisting + rlsSkipped.length,
+      skippedExisting,
+      rlsSkipped,
+      usersCreated: 0,
+      usersSkipped: 0,
+      usersFailed: 0,
+      userProvisioning: isSuperAdmin
+        ? importedActiveIdNumbers.length > 0
+          ? 'deferred'
+          : 'not_needed'
+        : 'not_authorized',
+      provisionIdNumbers: isSuperAdmin ? importedActiveIdNumbers : [],
+    });
+  }
+
+  // Optional legacy/inline path: provision a chunk in the same request.
   const batchSize = Math.min(
     MAX_PROVISION_BATCH,
-    Math.max(1, Number(body!.provisionBatchSize) || DEFAULT_PROVISION_BATCH)
+    Math.max(1, Number(body.provisionBatchSize) || DEFAULT_PROVISION_BATCH)
   );
-  const offset = Math.max(0, Number(body!.provisionOffset) || 0);
+  const offset = Math.max(0, Number(body.provisionOffset) || 0);
   const batchIds = importedActiveIdNumbers.slice(offset, offset + batchSize);
   const nextOffset = offset + batchIds.length;
   const hasMore = nextOffset < importedActiveIdNumbers.length;
 
   const provision = await provisionEmployeeAccountsReliable({
-    orgId: body!.orgId,
+    orgId: body.orgId,
     idNumbers: batchIds,
   });
 
   return NextResponse.json({
     ok: true,
     imported,
-    skipped: skipped + rlsSkipped.length,
+    skipped: skipped + skippedExisting + rlsSkipped.length,
+    skippedExisting,
     rlsSkipped,
     usersCreated: provision.created,
     usersSkipped: provision.skipped,
@@ -716,5 +782,6 @@ export async function POST(request: Request) {
     provisionNextOffset: nextOffset,
     provisionHasMore: hasMore,
     provisionBatchSize: batchSize,
+    provisionIdNumbers: importedActiveIdNumbers,
   });
 }
