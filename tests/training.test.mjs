@@ -23,9 +23,19 @@ function load(path, deps = {}) {
 }
 const types = load("lib/training/types.ts");
 const validation = load("lib/training/validation.ts", { "./types": types });
-const imports = load("lib/training/import.ts", { "./validation": validation });
+const budgetTypes = load("lib/budgets/types.ts");
+const imports = load("lib/training/import.ts", {
+  "./validation": validation,
+  "./types": types,
+  "@/lib/budgets/types": budgetTypes,
+});
 const dates = load("lib/employee-dates.ts");
-const excel = load("lib/training/excel.ts", { "@/lib/employee-dates": dates });
+const excel = load("lib/training/excel.ts", {
+  "@/lib/employee-dates": dates,
+  "@/lib/budgets/types": budgetTypes,
+  "./types": types,
+  "./import": imports,
+});
 const EMP = "00000000-0000-4000-8000-000000000001";
 const BUD = "00000000-0000-4000-8000-000000000002";
 const input = (extra = {}) => ({
@@ -68,6 +78,7 @@ const budgets = [
     employeeId: EMP,
     plannedCourse: "Excel skills",
     currency: "AFN",
+    plannedCourseStartDate: "2026-10-01",
   },
 ];
 
@@ -172,7 +183,7 @@ test("import excludes wrong budgets/currencies and retains repeated training on 
   );
   assert.equal(wrong.validRows.length, 0);
 });
-test("no budget is supported without inventing a budget balance", () => {
+test("blank Budget ID marks a new budget for creation on import", () => {
   const result = imports.resolveTrainingImport(
     [
       row({
@@ -187,6 +198,27 @@ test("no budget is supported without inventing a budget balance", () => {
     [],
   );
   assert.equal(result.validRows[0].training.budgetId, null);
+  assert.equal(result.validRows[0].createBudget, true);
+  assert.equal(result.validRows[0].budgetSeed?.plannedCourse, "Free course");
+});
+
+test("blank Budget ID reuses a matching employee course and start date", () => {
+  const result = imports.resolveTrainingImport(
+    [
+      row({
+        budgetCode: "",
+        courseTitle: "Excel skills",
+        currency: "AFN",
+        trainingStartDate: "2026-10-01",
+        trainingEndDate: "2026-10-01",
+      }),
+    ],
+    employees,
+    budgets,
+    [],
+  );
+  assert.equal(result.validRows[0].createBudget, false);
+  assert.equal(result.validRows[0].training.budgetId, budgets[0].id);
 });
 
 test("Excel export preserves the full report, employee ID, dates, costs and funding", async () => {
@@ -239,10 +271,12 @@ test("Excel export preserves the full report, employee ID, dates, costs and fund
     assert.equal(sheet.getCell("Y2").value, 120);
     assert.equal(sheet.getCell("V2").value, 940);
     assert.equal(sheet.getCell("G2").value, "Learning");
-    assert.equal(
-      sheet.getCell("N2").value.toISOString().slice(0, 10),
-      "2026-10-01",
-    );
+    const startDateCell = sheet.getCell("N2").value;
+    const startDate =
+      startDateCell instanceof Date
+        ? startDateCell.toISOString().slice(0, 10)
+        : String(startDateCell ?? "");
+    assert.equal(startDate, "2026-10-01");
     const parsed = await excel.readTrainingWorkbook(
       new File([saved], "Training-Records.xlsx"),
     );
