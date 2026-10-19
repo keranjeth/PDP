@@ -1,6 +1,12 @@
 import type { BudgetCurrency, BudgetListItem } from "@/lib/budgets/types";
 
-export const DELIVERY_METHODS = ["In Person", "Online", "Hybrid"] as const;
+export const DELIVERY_METHODS = [
+  "In Person",
+  "Online",
+  "Hybrid",
+  "Internal",
+  "External",
+] as const;
 export type DeliveryMethod = (typeof DELIVERY_METHODS)[number];
 export type FundingSource = { name: string; amount: number };
 

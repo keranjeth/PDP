@@ -139,7 +139,17 @@ test("actual dates, delivery method, and additional cost notes are checked", () 
   );
   assert.throws(
     () => validation.parseTrainingInput(input({ deliveryMethod: "Unknown" })),
-    /In Person/,
+    /Internal/,
+  );
+  assert.equal(
+    validation.parseTrainingInput(input({ deliveryMethod: "Internal" }))
+      .deliveryMethod,
+    "Internal",
+  );
+  assert.equal(
+    validation.parseTrainingInput(input({ deliveryMethod: "External" }))
+      .deliveryMethod,
+    "External",
   );
 });
 test("employee ID is the import key; course and currency come from the linked budget", () => {

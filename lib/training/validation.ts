@@ -51,7 +51,9 @@ export function parseTrainingInput(value: unknown): TrainingInput {
       row.deliveryMethod as TrainingInput["deliveryMethod"],
     )
   )
-    throw new Error("Choose In Person, Online, or Hybrid.");
+    throw new Error(
+      "Choose In Person, Online, Hybrid, Internal, or External.",
+    );
   if (
     !validCalendarDate(row.trainingStartDate) ||
     !validCalendarDate(row.trainingEndDate)

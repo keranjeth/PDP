@@ -78,7 +78,7 @@ Authoritative source for actual training and costs.
 | Employee Reference | FK → `employees.id` |
 | Related Budget ID | Optional FK → budget |
 | Course Title | Entered; initially populated from selected budget |
-| Delivery Method | In Person, Online, Hybrid |
+| Delivery Method | In Person, Online, Hybrid, Internal, External |
 | Training Start / End Date | Entered |
 | Actual Training Cost | Entered |
 | Additional Cost | Entered; optional; default 0 |
