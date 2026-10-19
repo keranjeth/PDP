@@ -156,11 +156,23 @@ async function buildPreview(
   orgId: string,
   cleaned: BudgetImportRecord[]
 ): Promise<
-  | { ok: true; rows: BudgetImportPreviewRow[]; checkRows: BudgetImportCheckRow[] }
+  | {
+      ok: true;
+      rows: BudgetImportPreviewRow[];
+      checkRows: BudgetImportCheckRow[];
+      skippedExisting: number;
+      skippedWorkbookDuplicates: number;
+    }
   | { ok: false; errors: string[] }
 > {
   if (cleaned.length === 0) {
-    return { ok: true, rows: [], checkRows: [] };
+    return {
+      ok: true,
+      rows: [],
+      checkRows: [],
+      skippedExisting: 0,
+      skippedWorkbookDuplicates: 0,
+    };
   }
 
   const idNumbers = [...new Set(cleaned.map((r) => r.employeeIdNumber))];
@@ -235,14 +247,12 @@ async function buildPreview(
     }
   }
 
-  const workbookKeyCounts = new Map<string, number>();
-  for (const row of cleaned) {
-    const key = budgetDuplicateKey(row);
-    workbookKeyCounts.set(key, (workbookKeyCounts.get(key) ?? 0) + 1);
-  }
-
   const checkRows: BudgetImportCheckRow[] = [];
   const resolved: BudgetImportPreviewRow[] = [];
+  /** First-seen Employee ID + course + start date in this workbook. */
+  const seenKeys = new Set<string>();
+  let skippedExisting = 0;
+  let skippedWorkbookDuplicates = 0;
 
   for (const row of cleaned) {
     const base = {
@@ -279,15 +289,31 @@ async function buildPreview(
       continue;
     }
 
+    // Exact duplicate only: same Employee ID + course + start date.
+    // Different courses (or dates) for the same person are allowed.
     const key = budgetDuplicateKey(row);
-    const duplicateReasons: string[] = [];
-    if ((workbookKeyCounts.get(key) ?? 0) > 1) {
-      duplicateReasons.push('Also appears elsewhere in this workbook');
+    if (seenKeys.has(key)) {
+      skippedWorkbookDuplicates += 1;
+      checkRows.push(
+        checkRowFromPartial(
+          { ...base, masterName: emp.full_name },
+          'Duplicate of another row in this workbook (same Employee ID, course, and start date).'
+        )
+      );
+      continue;
     }
     if (existingKeys.has(key)) {
-      duplicateReasons.push('Matches an existing budget allocation');
+      skippedExisting += 1;
+      checkRows.push(
+        checkRowFromPartial(
+          { ...base, masterName: emp.full_name },
+          'Already exists (same Employee ID, course, and start date).'
+        )
+      );
+      continue;
     }
 
+    seenKeys.add(key);
     resolved.push({
       rowNumber: row.rowNumber,
       employeeIdNumber: emp.id_number,
@@ -297,12 +323,18 @@ async function buildPreview(
       amount: row.amount,
       currency: row.currency,
       plannedCourseStartDate: row.plannedCourseStartDate,
-      isPotentialDuplicate: duplicateReasons.length > 0,
-      duplicateReasons,
+      isPotentialDuplicate: false,
+      duplicateReasons: [],
     });
   }
 
-  return { ok: true, rows: resolved, checkRows };
+  return {
+    ok: true,
+    rows: resolved,
+    checkRows,
+    skippedExisting,
+    skippedWorkbookDuplicates,
+  };
 }
 
 export async function POST(request: Request) {
@@ -337,13 +369,15 @@ export async function POST(request: Request) {
   const validRecords = cleaned.filter((row) =>
     validRows.some((v) => v.rowNumber === row.rowNumber)
   );
-  const potentialDuplicates = validRows.filter((r) => r.isPotentialDuplicate).length;
   const total = body!.records.length;
   const summary = {
     total,
     valid: validRows.length,
     invalid: checkRows.length,
-    potentialDuplicates,
+    skippedExisting: preview.skippedExisting,
+    skippedWorkbookDuplicates: preview.skippedWorkbookDuplicates,
+    /** Kept for older clients; exact duplicates are skipped, not re-imported. */
+    potentialDuplicates: 0,
     totalsByCurrency: totalsByCurrency(validRecords),
     previewRows: validRows,
     checkRows,
@@ -357,16 +391,18 @@ export async function POST(request: Request) {
   }
 
   if (validRecords.length === 0) {
-    return NextResponse.json(
-      {
-        error: 'No valid records to import.',
-        outcome: 'rolled_back' as const,
-        imported: 0,
-        excluded: checkRows.length,
-        ...summary,
-      },
-      { status: 400 }
-    );
+    return NextResponse.json({
+      ok: true,
+      outcome: 'completed' as const,
+      imported: 0,
+      excluded: checkRows.length,
+      created: [],
+      message:
+        preview.skippedExisting > 0 || preview.skippedWorkbookDuplicates > 0
+          ? 'All rows already exist or are workbook duplicates. Nothing new to import.'
+          : 'No valid records to import.',
+      ...summary,
+    });
   }
 
   const importId = String(body!.importId ?? '').trim();
@@ -382,7 +418,8 @@ export async function POST(request: Request) {
     p_org_id: orgId,
     p_import_id: importId,
     p_fingerprint: fingerprint,
-    p_allow_duplicates: Boolean(body!.allowPotentialDuplicates),
+    // Exact duplicates are skipped server-side; flag kept for RPC signature compat.
+    p_allow_duplicates: true,
     p_rows: validRecords,
   });
 
@@ -426,7 +463,7 @@ export async function POST(request: Request) {
           'Potential duplicate allocations were found. Review the preview and confirm to import them anyway.',
         outcome: 'rolled_back' as const,
         needsDuplicateConfirmation: true,
-        potentialDuplicates: result.potentialDuplicates ?? potentialDuplicates,
+        potentialDuplicates: result.potentialDuplicates ?? 0,
         totalsByCurrency: result.totalsByCurrency ?? totalsByCurrency(validRecords),
         previewRows: result.previewRows ?? validRows,
         checkRows,
@@ -449,13 +486,23 @@ export async function POST(request: Request) {
       '',
   }));
 
+  const rpcSkippedExisting = Number(
+    (result as { skippedExisting?: number } | undefined)?.skippedExisting ?? 0
+  );
+  const rpcSkippedWorkbook = Number(
+    (result as { skippedWorkbookDuplicates?: number } | undefined)
+      ?.skippedWorkbookDuplicates ?? 0
+  );
+
   return NextResponse.json({
     ok: true,
     outcome: 'completed' as const,
     imported: result?.imported ?? created.length,
-    excluded: checkRows.length,
+    excluded: checkRows.length + rpcSkippedExisting + rpcSkippedWorkbook,
     total: result?.total ?? validRecords.length,
-    potentialDuplicates: result?.potentialDuplicates ?? 0,
+    skippedExisting: rpcSkippedExisting || summary.skippedExisting,
+    skippedWorkbookDuplicates: rpcSkippedWorkbook || summary.skippedWorkbookDuplicates,
+    potentialDuplicates: 0,
     totalsByCurrency: result?.totalsByCurrency ?? totalsByCurrency(validRecords),
     created,
     previewRows: result?.previewRows ?? validRows,

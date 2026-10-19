@@ -84,7 +84,10 @@ type BudgetImportPreviewState = {
   total: number;
   valid: number;
   invalid: number;
+  /** Exact duplicates skipped (same Employee ID + course + start date). */
   potentialDuplicates: number;
+  skippedExisting: number;
+  skippedWorkbookDuplicates: number;
   totalsByCurrency: Record<string, number>;
   previewRows: BudgetImportPreviewRow[];
   checkRows: BudgetImportCheckRow[];
@@ -636,8 +639,8 @@ function BudgetsImportModal({
                 <div>
                   <p className="text-sm font-medium text-emerald-900">Validation complete</p>
                   <p className="mt-1 text-sm text-emerald-800">
-                    Valid {validCount} · Needs correction {needsCorrection} · Potential duplicates{' '}
-                    {duplicateCount}
+                    New to import {validCount} · Excluded {needsCorrection}
+                    {duplicateCount > 0 ? ` · Already exist / workbook duplicates ${duplicateCount}` : ''}
                   </p>
                   {validCount > 0 ? (
                     <p className="mt-2 text-sm text-emerald-900">
@@ -651,17 +654,14 @@ function BudgetsImportModal({
                       The sample template row (`__PDP_SAMPLE__`) was detected and ignored.
                     </p>
                   ) : null}
-                  {duplicateCount > 0 ? (
-                    <p className="mt-2 text-sm font-medium text-amber-800">
-                      Importing will include {duplicateCount} potential duplicate
-                      {duplicateCount === 1 ? '' : 's'}. Existing budgets will not be merged or
-                      overwritten.
-                    </p>
-                  ) : null}
+                  <p className="mt-2 text-sm text-emerald-800">
+                    Multiple courses per employee are allowed. Only the same Employee ID + course +
+                    start date is treated as a duplicate and skipped.
+                  </p>
                   {needsCorrection > 0 ? (
                     <p className="mt-2 text-sm text-slate-700">
-                      Rows needing correction are excluded. Download them, fix the file, and upload
-                      again for those rows.
+                      Excluded rows (corrections or exact duplicates) are listed in Download Records
+                      to Check.
                     </p>
                   ) : null}
                 </div>
@@ -674,7 +674,9 @@ function BudgetsImportModal({
                   >
                     {isImporting
                       ? 'Importing…'
-                      : `Import ${validCount} valid record${validCount === 1 ? '' : 's'}`}
+                      : validCount === 0
+                        ? 'Nothing new to import'
+                        : `Import ${validCount} new record${validCount === 1 ? '' : 's'}`}
                   </Button>
                   <button
                     type="button"
@@ -1069,6 +1071,8 @@ export default function BudgetsPage() {
       valid?: number;
       invalid?: number;
       potentialDuplicates?: number;
+      skippedExisting?: number;
+      skippedWorkbookDuplicates?: number;
       totalsByCurrency?: Record<string, number>;
       previewRows?: BudgetImportPreviewRow[];
       checkRows?: BudgetImportCheckRow[];
@@ -1080,13 +1084,17 @@ export default function BudgetsPage() {
     );
     const previewRows = payload?.previewRows ?? [];
     const valid = payload?.valid ?? previewRows.length;
+    const skippedExisting = Number(payload?.skippedExisting ?? 0);
+    const skippedWorkbookDuplicates = Number(payload?.skippedWorkbookDuplicates ?? 0);
     const importId = importAttemptIdRef.current ?? crypto.randomUUID();
     importAttemptIdRef.current = importId;
     setImportPreview({
       total: valid + checkRows.length,
       valid,
       invalid: checkRows.length,
-      potentialDuplicates: payload?.potentialDuplicates ?? 0,
+      potentialDuplicates: skippedExisting + skippedWorkbookDuplicates,
+      skippedExisting,
+      skippedWorkbookDuplicates,
       totalsByCurrency: payload?.totalsByCurrency ?? { AFN: 0, USD: 0, EUR: 0 },
       previewRows,
       checkRows,

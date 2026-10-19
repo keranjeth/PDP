@@ -235,6 +235,14 @@ export type EmployeeTableExportRow = {
   employmentStatus?: string;
 };
 
+/** Employee + budget allocation columns for Reports export. */
+export type EmployeeBudgetReportExportRow = EmployeeTableExportRow & {
+  plannedCourse: string;
+  budgetAmount: number | string;
+  currency: string;
+  plannedCourseStartDate: string;
+};
+
 const SAMPLE_IMPORT_RECORD: EmployeeImportRecord = {
   idNumber: '123456',
   fullName: 'Sample Employee',
@@ -717,6 +725,124 @@ export async function downloadEmployeeRecordsExport(
   const link = document.createElement('a');
   link.href = url;
   link.download = options?.fileName ?? EMPLOYEE_EXPORT_FILE_NAME;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+/** Reports export: employee fields plus Course title, Budget, and Planned date. */
+export async function downloadEmployeeBudgetReportExport(
+  rows: EmployeeBudgetReportExportRow[],
+  options?: { fileName?: string; sheetName?: string }
+) {
+  const ExcelJSMod = await import('exceljs');
+  const ExcelJS = ExcelJSMod.default;
+  const workbook = new ExcelJS.Workbook();
+  const sheetName = options?.sheetName ?? 'Employee Budgets';
+  const ws = workbook.addWorksheet(sheetName, {
+    views: [{ state: 'frozen', ySplit: 1, activeCell: 'A2', showGridLines: true }],
+  });
+
+  const PRIMARY_ARGB = 'FF16D187';
+  const thin = { style: 'thin' as const, color: { argb: PRIMARY_ARGB } };
+  const headers = [
+    'ID Number',
+    'Full Name',
+    'Status',
+    'Designation',
+    'Department',
+    'Region',
+    'Course Title',
+    'Budget',
+    'Currency',
+    'Planned Date',
+  ] as const;
+
+  ws.addRow([...headers]);
+  for (const row of rows) {
+    const amount =
+      typeof row.budgetAmount === 'number'
+        ? row.budgetAmount
+        : row.budgetAmount === '' || row.budgetAmount == null
+          ? ''
+          : Number(row.budgetAmount);
+    ws.addRow([
+      String(row.idNumber ?? ''),
+      String(row.fullName ?? ''),
+      String(row.employmentStatus ?? ''),
+      String(row.designation ?? ''),
+      String(row.department ?? ''),
+      String(row.region ?? ''),
+      String(row.plannedCourse ?? ''),
+      amount === '' || !Number.isFinite(amount as number) ? String(row.budgetAmount ?? '') : amount,
+      String(row.currency ?? ''),
+      String(row.plannedCourseStartDate ?? ''),
+    ]);
+  }
+
+  const headerRow = ws.getRow(1);
+  headerRow.height = 20;
+  headerRow.eachCell({ includeEmpty: false }, (cell) => {
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: PRIMARY_ARGB },
+    };
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+  });
+
+  const columnCount = headers.length;
+  const rowCount = ws.rowCount;
+  for (let r = 1; r <= rowCount; r += 1) {
+    const excelRow = ws.getRow(r);
+    for (let c = 1; c <= columnCount; c += 1) {
+      const cell = excelRow.getCell(c);
+      cell.border = { top: thin, left: thin, bottom: thin, right: thin };
+      if (r !== 1) {
+        cell.alignment = {
+          vertical: 'middle',
+          horizontal: c === 8 ? 'right' : 'left',
+          wrapText: false,
+        };
+      }
+    }
+  }
+
+  ws.getColumn(1).numFmt = '@';
+  ws.getColumn(10).numFmt = '@';
+  for (let r = 2; r <= rowCount; r += 1) {
+    const idCell = ws.getRow(r).getCell(1);
+    idCell.value = String(idCell.value ?? '');
+    idCell.numFmt = '@';
+    const dateCell = ws.getRow(r).getCell(10);
+    dateCell.value = String(dateCell.value ?? '');
+    dateCell.numFmt = '@';
+    const budgetCell = ws.getRow(r).getCell(8);
+    if (typeof budgetCell.value === 'number') {
+      budgetCell.numFmt = '#,##0.00';
+    }
+  }
+
+  for (let col = 1; col <= columnCount; col += 1) {
+    let maxLen = String(headers[col - 1]).length;
+    ws.eachRow({ includeEmpty: false }, (row) => {
+      const v = row.getCell(col).value;
+      const text = v == null ? '' : String(v);
+      maxLen = Math.max(maxLen, text.length);
+    });
+    ws.getColumn(col).width = Math.min(Math.max(maxLen + 2.5, 11), 48);
+  }
+
+  const buf = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buf], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = options?.fileName ?? 'Employee-Budget-Report.xlsx';
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

@@ -12,6 +12,8 @@ export async function GET(request: Request) {
   const access = await requireBudgetApiAccess(request, orgId, 'read');
   if (!access.ok) return access.response;
 
+  // Employee fields come from the view join — avoid a second .in(id, …) lookup
+  // that exceeds PostgREST URL limits after large imports (~800+ UUIDs).
   const { data: budgetRows, error: budgetErr } = await access.sessionClient
     .from('v_employee_budget_list')
     .select(
@@ -26,6 +28,15 @@ export async function GET(request: Request) {
         'current_amount',
         'remaining_amount',
         'has_transactions',
+        'employee_id_number',
+        'full_name',
+        'employment_status',
+        'region',
+        'duty_station',
+        'job_location',
+        'department',
+        'unit',
+        'designation',
       ].join(',')
     )
     .eq('org_id', orgId)
@@ -35,49 +46,9 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: budgetErr.message }, { status: 400 });
   }
 
-  const employeeIds = [
-    ...new Set(
-      ((budgetRows ?? []) as Array<{ employee_id: string }>).map((r) => r.employee_id)
-    ),
-  ];
-
-  const employeeById = new Map<
-    string,
-    {
-      id: string;
-      id_number: string;
-      full_name: string;
-      employment_status: string | null;
-      region: string | null;
-      duty_station: string | null;
-      job_location: string | null;
-      department: string;
-      unit: string | null;
-      designation: string;
-    }
-  >();
-
-  if (employeeIds.length > 0) {
-    const { data: employees, error: empErr } = await access.sessionClient
-      .from('employees')
-      .select(
-        'id,id_number,full_name,employment_status,region,duty_station,job_location,department,unit,designation'
-      )
-      .eq('org_id', orgId)
-      .in('id', employeeIds);
-
-    if (empErr) {
-      return NextResponse.json({ error: empErr.message }, { status: 400 });
-    }
-
-    for (const emp of employees ?? []) {
-      employeeById.set(String((emp as { id: string }).id), emp as never);
-    }
-  }
-
-  const budgets: BudgetListItem[] = ((budgetRows ?? []) as Array<Parameters<typeof mapBudgetListItem>[0]>).map(
-    (row) => mapBudgetListItem(row, employeeById.get(row.employee_id))
-  );
+  const budgets: BudgetListItem[] = (
+    (budgetRows ?? []) as Array<Parameters<typeof mapBudgetListItem>[0]>
+  ).map((row) => mapBudgetListItem(row));
 
   return NextResponse.json({ budgets });
 }
