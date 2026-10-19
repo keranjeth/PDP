@@ -85,6 +85,7 @@ export function CompactDataTable<T extends { id: string }>({
   getRowSelectionLabel,
   detailsColumnClassName,
   hidePagination = false,
+  showEmptyHeaders = false,
 }: {
   title: string;
   description: string;
@@ -132,6 +133,8 @@ export function CompactDataTable<T extends { id: string }>({
   getRowSelectionLabel?: (row: T) => string;
   /** When true, all rows render and the pagination footer is omitted. */
   hidePagination?: boolean;
+  /** Keep the table's column labels visible before the first record is added. */
+  showEmptyHeaders?: boolean;
 }) {
   const detailsColClass = detailsColumnClassName ?? 'w-[72px]';
   const firstKey = columns[0]?.key ?? 'id';
@@ -288,7 +291,7 @@ export function CompactDataTable<T extends { id: string }>({
 
       {isLoading ? (
         <div className="px-4 py-10 text-center text-sm text-slate-500 sm:px-6 sm:py-12">Loading…</div>
-      ) : displayRows.length === 0 ? (
+      ) : displayRows.length === 0 && !showEmptyHeaders ? (
         <div className="px-4 py-10 text-center text-sm text-slate-500 sm:px-6 sm:py-12">
           {emptyMessage}
         </div>
@@ -351,6 +354,7 @@ export function CompactDataTable<T extends { id: string }>({
             </thead>
 
             <tbody className="bg-white">
+              {displayRows.length === 0 ? <tr><td colSpan={columns.length + (renderDetailsCell ? 1 : 0) + (rowSelection ? 1 : 0)} className="px-4 py-10 text-center text-sm text-slate-500">{emptyMessage}</td></tr> : null}
               {pagedRows.map((row, index) => (
                 <tr
                   key={row.id}
@@ -387,6 +391,7 @@ export function CompactDataTable<T extends { id: string }>({
           </div>
 
           <div className="space-y-3 p-4 md:hidden">
+            {displayRows.length === 0 ? <p className="py-6 text-center text-sm text-slate-500">{emptyMessage}</p> : null}
             {pagedRows.map((row) => (
               <div
                 key={row.id}

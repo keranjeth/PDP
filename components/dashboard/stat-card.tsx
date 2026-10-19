@@ -207,6 +207,8 @@ export type StatCardProps = {
   displayValue?: string;
   /** Hide trend/comparison chrome when metrics are not yet available. */
   placeholder?: boolean;
+  /** Suppress comparisons when no historical snapshots exist. */
+  showComparison?: boolean;
 };
 
 export function StatCard({
@@ -220,6 +222,7 @@ export function StatCard({
   icon,
   displayValue,
   placeholder = false,
+  showComparison = true,
 }: StatCardProps) {
   const cardRef = useRef<HTMLDivElement | null>(null);
   const [isHovered, setIsHovered] = useState(false);
@@ -290,19 +293,19 @@ export function StatCard({
               ) : null}
             </div>
 
-            {!placeholder ? (
+            {!placeholder && showComparison ? (
               <div className={`flex items-center gap-1 text-[12px] font-semibold ${trendClass}`}>
                 <span>{formattedTrend}</span>
                 <span>{arrow}</span>
               </div>
-            ) : (
+            ) : placeholder ? (
               <span className="text-[12px] font-semibold text-slate-400">Pending</span>
-            )}
+            ) : null}
           </div>
 
           <div className="flex justify-between text-[12px] text-slate-500">
             <span>{bottomLabel}</span>
-            {!placeholder ? <span>{comparisonLabel}</span> : <span />}
+            {!placeholder && showComparison ? <span>{comparisonLabel}</span> : <span />}
           </div>
         </div>
       </div>
@@ -322,7 +325,7 @@ export function StatCard({
                     value: 'Available when data is recorded',
                   },
                 ]
-              : [
+              : showComparison ? [
                   {
                     color: PRIMARY,
                     label: 'Current',
@@ -333,7 +336,7 @@ export function StatCard({
                     label: 'Previous',
                     value: formatExactAmountWithCurrency(previousValue, currency),
                   },
-                ]
+                ] : [{ color: PRIMARY, label: 'Current', value: displayValue === '—' ? 'Unavailable' : displayValue === '…' ? 'Loading…' : formatExactAmountWithCurrency(currentValue, currency) }]
           }
         />
       ) : null}
