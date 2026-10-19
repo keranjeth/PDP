@@ -1,6 +1,9 @@
 import type { BudgetCurrency, BudgetListItem } from "@/lib/budgets/types";
 
+import type { TrainingRecord } from "@/lib/training/types";
+
 export type DashboardTraining = {
+  details?: TrainingRecord;
   id: string;
   trainingCode: string;
   employeeIdNumber: string;
@@ -15,7 +18,7 @@ export type DashboardTraining = {
 export type PdDashboardData = {
   budgets: BudgetListItem[];
   totalEmployees: number;
-  // Training Records has no source table yet. Keep unknown costs distinct from zero.
+  // False only when the training data source is unavailable.
   actualCostsAvailable: boolean;
   trainings: DashboardTraining[];
 };
@@ -74,6 +77,12 @@ export function buildPdOverview(
     // These are current allocation balances, not inferred financial-year totals.
     totalBudget: budgets.reduce((sum, row) => sum + row.currentAmount, 0),
     remainingBudget: budgets.reduce((sum, row) => sum + row.remainingAmount, 0),
+    allocatedActualCost: data.actualCostsAvailable
+      ? budgets.reduce(
+          (sum, row) => sum + row.currentAmount - row.remainingAmount,
+          0,
+        )
+      : null,
     actualCost: data.actualCostsAvailable
       ? trainings.reduce((sum, row) => sum + row.actualCost, 0)
       : null,

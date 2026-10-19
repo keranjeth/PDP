@@ -138,6 +138,7 @@ function routeWith(access) {
     "@/lib/budgets/authz": { requireBudgetApiAccess: access },
     "@/lib/budgets/map": { mapBudgetListItem },
     "@/lib/supabase/read-all-pages": { readAllPages },
+    "@/lib/training/server": { listTrainings: async () => [] },
   });
 }
 
@@ -206,10 +207,38 @@ test("API uses scoped session queries, includes leavers once, and paginates all 
   assert.equal(response.status, 200);
   assert.equal(result.totalEmployees, 3);
   assert.equal(result.budgets.length, 1203);
-  assert.equal(result.actualCostsAvailable, false);
+  assert.equal(result.actualCostsAvailable, true);
   assert.deepEqual(result.trainings, []);
   assert.ok(
     filters.every(([, key, value]) => key === "org_id" && value === "my-org"),
   );
   assert.equal(response.headers.get("cache-control"), "private, no-store");
+});
+
+test("unbudgeted training costs stay out of budget utilization but remain in actual training totals", () => {
+  const result = buildPdOverview(
+    data({
+      budgets: [budget({ currentAmount: 100, remainingAmount: 70 })],
+      actualCostsAvailable: true,
+      trainings: [
+        {
+          id: "linked",
+          currency: "AFN",
+          trainingDate: "2026-10-01",
+          actualCost: 30,
+        },
+        {
+          id: "unbudgeted",
+          currency: "AFN",
+          trainingDate: "2026-10-02",
+          actualCost: 20,
+        },
+      ],
+    }),
+    "AFN",
+    2026,
+  );
+  assert.equal(result.actualCost, 50);
+  assert.equal(result.allocatedActualCost, 30);
+  assert.equal(result.remainingBudget, 70);
 });

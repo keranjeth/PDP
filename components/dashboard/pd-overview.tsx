@@ -11,6 +11,7 @@ import {
   getViewportTooltipAnchor,
 } from "@/components/dashboard/stat-card";
 import { CompactDataTable } from "@/components/ui/compact-employee-table";
+import { TrainingDetails } from "@/components/training/TrainingDetails";
 import { Modal } from "@/components/ui/Modal";
 import { BUDGET_CURRENCIES, type BudgetCurrency } from "@/lib/budgets/types";
 import { formatCurrency } from "@/lib/format-currency";
@@ -34,7 +35,7 @@ const TRAINING_COLUMNS = [
   { key: "fullName", label: "Full Name" },
   { key: "courseTitle", label: "Course Title" },
   { key: "trainingDate", label: "Training Date" },
-  { key: "actualCost", label: "Actual Cost", align: "right" as const },
+  { key: "actualCost", label: "Total Actual Cost", align: "right" as const },
   { key: "budgetBalance", label: "Budget Balance", align: "right" as const },
 ];
 
@@ -199,7 +200,7 @@ export function DashboardOverview({
         />
         <BudgetOverviewChart
           totalBudget={overview.totalBudget}
-          actualCost={overview.actualCost}
+          actualCost={overview.allocatedActualCost}
           remainingBudget={overview.remainingBudget}
           isHydrated={isHydrated}
           loading={loading}
@@ -214,6 +215,7 @@ export function DashboardOverview({
         emptyMessage="No training records available yet."
         isLoading={loading}
         showEmptyHeaders
+        tableMinWidthClassName="min-w-[980px]"
         actions={
           <Link
             href="/training-records"
@@ -272,7 +274,7 @@ export function DashboardOverview({
               className="block truncate"
               title={String(row[key as keyof DashboardTraining] ?? "")}
             >
-              {row[key as keyof DashboardTraining] ?? "—"}
+              {String(row[key as keyof DashboardTraining] ?? "—")}
             </span>
           );
         }}
@@ -287,38 +289,47 @@ export function DashboardOverview({
           </button>
         )}
       />
-      <Modal
-        isOpen={details !== null}
-        onClose={() => setDetails(null)}
-        title="Training Details"
-      >
-        {details ? (
-          <dl className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
-            {[
-              ["Training ID", details.trainingCode],
-              ["Employee ID", details.employeeIdNumber],
-              ["Full Name", details.fullName],
-              ["Course Title", details.courseTitle],
-              ["Training Date", trainingDate(details.trainingDate)],
-              [
-                "Actual Cost",
-                formatCurrency(details.actualCost, details.currency),
-              ],
-              [
-                "Budget Balance",
-                details.budgetBalance === null
-                  ? "—"
-                  : formatCurrency(details.budgetBalance, details.currency),
-              ],
-            ].map(([label, value]) => (
-              <div key={label}>
-                <dt className="text-slate-500">{label}</dt>
-                <dd className="mt-1 font-medium text-slate-900">{value}</dd>
-              </div>
-            ))}
-          </dl>
-        ) : null}
-      </Modal>
+      {details?.details ? (
+        <TrainingDetails
+          record={details.details}
+          canEdit={false}
+          onEdit={() => {}}
+          onClose={() => setDetails(null)}
+        />
+      ) : (
+        <Modal
+          isOpen={details !== null}
+          onClose={() => setDetails(null)}
+          title="Training Details"
+        >
+          {details ? (
+            <dl className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+              {[
+                ["Training ID", details.trainingCode],
+                ["Employee ID", details.employeeIdNumber],
+                ["Full Name", details.fullName],
+                ["Course Title", details.courseTitle],
+                ["Training Date", trainingDate(details.trainingDate)],
+                [
+                  "Actual Cost",
+                  formatCurrency(details.actualCost, details.currency),
+                ],
+                [
+                  "Budget Balance",
+                  details.budgetBalance === null
+                    ? "—"
+                    : formatCurrency(details.budgetBalance, details.currency),
+                ],
+              ].map(([label, value]) => (
+                <div key={label}>
+                  <dt className="text-slate-500">{label}</dt>
+                  <dd className="mt-1 font-medium text-slate-900">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
+        </Modal>
+      )}
     </div>
   );
 }
@@ -414,7 +425,7 @@ function MonthlyTrainingChart({
               },
               {
                 color: PRIMARY_SOFT,
-                label: "Actual Cost",
+                label: "Total Actual Cost",
                 value: actualCostsAvailable
                   ? formatCurrency(hoveredMonth.actual, currency)
                   : "Unavailable",

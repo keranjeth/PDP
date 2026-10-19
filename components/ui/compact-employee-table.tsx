@@ -86,6 +86,7 @@ export function CompactDataTable<T extends { id: string }>({
   detailsColumnClassName,
   hidePagination = false,
   showEmptyHeaders = false,
+  tableMinWidthClassName,
 }: {
   title: string;
   description: string;
@@ -135,6 +136,7 @@ export function CompactDataTable<T extends { id: string }>({
   hidePagination?: boolean;
   /** Keep the table's column labels visible before the first record is added. */
   showEmptyHeaders?: boolean;
+  tableMinWidthClassName?: string;
 }) {
   const detailsColClass = detailsColumnClassName ?? 'w-[72px]';
   const firstKey = columns[0]?.key ?? 'id';
@@ -298,7 +300,7 @@ export function CompactDataTable<T extends { id: string }>({
       ) : (
         <div className={embedded ? 'overflow-hidden' : ''}>
           <div className="overflow-x-auto">
-            <table className="hidden w-full table-fixed text-sm md:table">
+            <table className={`hidden w-full table-fixed text-sm md:table ${tableMinWidthClassName ?? ''}`}>
             <thead className="relative z-10 border-b border-slate-200 bg-slate-50/80">
               <tr>
                 {rowSelection ? (

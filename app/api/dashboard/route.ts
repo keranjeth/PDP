@@ -1,3 +1,4 @@
+import { listTrainings } from "@/lib/training/server";
 import { NextResponse } from "next/server";
 import { requireBudgetApiAccess } from "@/lib/budgets/authz";
 import { mapBudgetListItem } from "@/lib/budgets/map";
@@ -12,7 +13,7 @@ export async function GET(request: Request) {
   try {
     // Every query uses the caller's session and existing organization/region RLS.
     const client = access.sessionClient;
-    const [budgetRows, employees, leavers] = await Promise.all([
+    const [budgetRows, employees, leavers, trainings] = await Promise.all([
       readAllPages((from, to) =>
         client
           .from("v_employee_budget_list")
@@ -41,6 +42,7 @@ export async function GET(request: Request) {
           .order("leaver_id")
           .range(from, to),
       ),
+      listTrainings(client, orgId),
     ]);
     const employeeIds = new Set([
       ...employees.map((row) => String(row.id)),
@@ -51,8 +53,19 @@ export async function GET(request: Request) {
         budgetRows as unknown as Array<Parameters<typeof mapBudgetListItem>[0]>
       ).map((row) => mapBudgetListItem(row)),
       totalEmployees: employeeIds.size,
-      actualCostsAvailable: false,
-      trainings: [],
+      actualCostsAvailable: true,
+      trainings: trainings.map((r) => ({
+        id: r.id,
+        trainingCode: r.trainingCode,
+        employeeIdNumber: r.employeeIdNumber,
+        fullName: r.fullName,
+        courseTitle: r.courseTitle,
+        trainingDate: r.trainingStartDate,
+        actualCost: r.totalActualCost,
+        budgetBalance: r.budgetBalance,
+        currency: r.currency,
+        details: r,
+      })),
     };
     return NextResponse.json(result, {
       headers: { "Cache-Control": "private, no-store" },

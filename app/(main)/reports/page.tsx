@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { TrainingReport } from '@/components/training/TrainingReport';
 import { useEffect, useMemo, useState } from 'react';
 import { useAppAuth } from '@/components/providers/AppProviders';
 import { Button } from '@/components/ui/Button';
@@ -312,10 +313,7 @@ export default function ReportsPage() {
   const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isReady || !orgId || !canReadBudgets) {
-      setLoading(false);
-      return;
-    }
+    if (!isReady || !orgId || !canReadBudgets) return;
     let cancelled = false;
     void (async () => {
       setLoading(true);
@@ -338,10 +336,7 @@ export default function ReportsPage() {
   }, [isReady, orgId, canReadBudgets]);
 
   useEffect(() => {
-    if (!isReady || !orgId || !canReadEmployees) {
-      setExportCounts(null);
-      return;
-    }
+    if (!isReady || !orgId || !canReadEmployees) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -406,16 +401,16 @@ export default function ReportsPage() {
   const currencyTotals = useMemo(() => sumByCurrency(budgets), [budgets]);
   const reportCurrency = useMemo(() => primaryCurrency(currencyTotals), [currencyTotals]);
   const byRegion = useMemo(
-    () => topGroups(budgets, (row) => row.region),
-    [budgets]
+    () => topGroups(budgets.filter((row) => row.currency === reportCurrency), (row) => row.region),
+    [budgets, reportCurrency]
   );
   const byDepartment = useMemo(
-    () => topGroups(budgets, (row) => row.department),
-    [budgets]
+    () => topGroups(budgets.filter((row) => row.currency === reportCurrency), (row) => row.department),
+    [budgets, reportCurrency]
   );
   const byCourse = useMemo(
-    () => topGroups(budgets, (row) => row.plannedCourse),
-    [budgets]
+    () => topGroups(budgets.filter((row) => row.currency === reportCurrency), (row) => row.plannedCourse),
+    [budgets, reportCurrency]
   );
 
   const activeEmployees = useMemo(() => {
@@ -459,10 +454,11 @@ export default function ReportsPage() {
         </div>
         <HeaderDivider className="my-4" />
         <p className="text-sm text-slate-600">
-          Actual training cost reports will appear here when Training Records are recorded. Until
-          then, remaining budget equals the current allocated amount.
+          Budget balances include linked training costs. Export training participation and costs below.
         </p>
       </div>
+
+      {canReadBudgets && orgId ? <TrainingReport orgId={orgId} /> : null}
 
       {canReadEmployees ? (
         <div className="rounded-[18px] border border-slate-200/90 bg-white p-4 shadow-sm sm:p-5">
@@ -567,7 +563,7 @@ export default function ReportsPage() {
                     currencyTotals[reportCurrency].remaining,
                     reportCurrency
                   )}
-                  hint="After costs when training is recorded"
+                  hint="After actual training costs"
                 />
                 <SummaryCard
                   label="Currencies in use"
